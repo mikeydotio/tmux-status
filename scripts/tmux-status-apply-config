@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# tmux-status-apply-config — Apply dynamic settings from settings.conf
+#
+# Reads the user's settings file and applies tmux options that depend
+# on configuration values (e.g., clock format). Called by the overlay
+# via run-shell at source time.
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
+CONFIG_FILE="${CONFIG_DIR}/settings.conf"
+
+# ── Defaults ───────────────────────────────────────────────────
+CLOCK_24H=false
+
+# ── Load user settings ─────────────────────────────────────────
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+# ── Apply clock format ─────────────────────────────────────────
+if [ "$CLOCK_24H" = "true" ]; then
+    tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%H:%M#[fg=colour4]」'
+else
+    tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%-l:%M#[fg=colour4]」'
+fi

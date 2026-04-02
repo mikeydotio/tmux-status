@@ -1,0 +1,13 @@
+{
+  "session_name": "main",
+  "windows": [
+    {
+      "name": "bash",
+      "commands": []
+    },
+    {
+      "name": "claude",
+      "commands": ["claude"]
+    }
+  ]
+}

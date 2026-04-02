@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# tmux-claude-status — Claude Code session info for tmux status bar
+#
+# Displays model name, effort level, context usage %, and API quota
+# for the Claude Code session running in the given tmux pane.
+# Outputs nothing when the active pane is not running Claude Code.
+#
+# Usage: tmux-claude-status <pane_pid>
+# Called by tmux via: #(~/.local/bin/tmux-claude-status "#{pane_pid}")
+
+PANE_PID="$1"
+[ -z "$PANE_PID" ] && exit 0
+[ -z "$HOME" ] && HOME=$(eval echo ~)
+CLAUDE_DIR="${HOME}/.claude"
+
+# ── Find the Claude session for this pane ──────────────────────
+# Walk parent chain from each Claude process PID to see if it descends
+# from the given tmux pane PID. Extract cwd from the matching session file.
+SESSION_CWD=""
+for pidfile in "${CLAUDE_DIR}/sessions/"*.json; do
+    [ -f "$pidfile" ] || continue
+    pid=$(python3 -c "import json; print(json.load(open('$pidfile'))['pid'])" 2>/dev/null)
+    [ -z "$pid" ] && continue
+    check_pid="$pid"
+    while [ -n "$check_pid" ] && [ "$check_pid" != "1" ] && [ "$check_pid" != "0" ]; do
+        if [ "$check_pid" = "$PANE_PID" ]; then
+            SESSION_CWD=$(python3 -c "import json; print(json.load(open('$pidfile'))['cwd'])" 2>/dev/null)
+            break 2
+        fi
+        check_pid=$(ps -o ppid= -p "$check_pid" 2>/dev/null | tr -d ' ')
+    done
+done
+[ -z "$SESSION_CWD" ] && exit 0
+
+# ── Find the session transcript via cwd → project directory ────
+# Claude Code names project dirs by replacing / with - in the cwd path.
+PROJECT_DIR_NAME=$(echo "$SESSION_CWD" | tr '/' '-')
+PROJECT_DIR="${CLAUDE_DIR}/projects/${PROJECT_DIR_NAME}"
+[ -d "$PROJECT_DIR" ] || exit 0
+
+# Most recently modified .jsonl is the active transcript
+TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
+[ -z "$TRANSCRIPT" ] && exit 0
+
+# ── Parse model, context usage, and effort from transcript ─────
+eval "$(python3 << PYEOF
+import re, json, shlex, os, time, glob
+
+transcript = "$TRANSCRIPT"
+model = ""
+used_pct = 0
+effort = "auto"
+
+with open(transcript, "rb") as f:
+    f.seek(0, 2)
+    size = f.tell()
+    chunk_size = min(size, 512000)
+    f.seek(size - chunk_size)
+    data = f.read().decode("utf-8", errors="replace")
+
+found_model = False
+found_effort = False
+conversation_id = ""
+
+for line in reversed(data.strip().split("\n")):
+    if found_model and found_effort and conversation_id:
+        break
+    try:
+        d = json.loads(line)
+    except:
+        continue
+
+    # Grab conversation session ID from any message that has it
+    if not conversation_id and "sessionId" in d:
+        conversation_id = d["sessionId"]
+
+    # Parse model from the most recent assistant message
+    if not found_model and d.get("type") == "assistant":
+        msg = d.get("message", {})
+        if isinstance(msg, dict) and "model" in msg:
+            model = msg["model"]
+            found_model = True
+
+    # Parse effort from the most recent /effort command output
+    if not found_effort and d.get("type") == "user":
+        content = d.get("message", {}).get("content", "")
+        if isinstance(content, str) and "<local-command-stdout>" in content:
+            tags = re.findall(r"<local-command-stdout>(.*?)</local-command-stdout>", content)
+            for tag in reversed(tags):
+                m = re.search(r"(?:Set effort level to |Effort level: )(\w+)", tag)
+                if m:
+                    effort = m.group(1)
+                    found_effort = True
+                    break
+
+# Read context % from bridge file (written by statusline hook, authoritative)
+if conversation_id:
+    bridge = os.path.join(os.path.expanduser("~"), ".cache", "coderig", f"claude-ctx-{conversation_id}.json")
+    try:
+        bd = json.load(open(bridge))
+        if time.time() - bd.get("timestamp", 0) < 1800:
+            used_pct = bd.get("used_pct", used_pct)
+    except:
+        pass
+
+# Read quota from host-provided bridge file (bind mount) or local cache
+import os as _os
+quota_bridge = None
+for _qpath in ["/mnt/host-claude-quota", _os.path.join(_os.path.expanduser("~"), ".cache", "coderig", "claude-quota.json")]:
+    if _os.path.exists(_qpath):
+        quota_bridge = _qpath
+        break
+quota_status = "none"
+five_hour_pct = 0
+five_hour_reset = ""
+seven_day_pct = 0
+seven_day_reset = ""
+key_expires_at = ""
+if quota_bridge:
+    try:
+        qd = json.load(open(quota_bridge))
+        quota_status = qd.get("status", "none")
+        key_expires_at = qd.get("expires_at", "")
+        if quota_status == "ok":
+            fh = qd.get("five_hour", {})
+            five_hour_pct = round(fh.get("utilization", 0))
+            five_hour_reset = fh.get("resets_at", "")
+            sd = qd.get("seven_day", {})
+            seven_day_pct = round(sd.get("utilization", 0))
+            seven_day_reset = sd.get("resets_at", "")
+    except:
+        pass
+
+def fmt_reset(iso_str):
+    if not iso_str:
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        delta = reset - datetime.now(timezone.utc)
+        secs = max(0, int(delta.total_seconds()))
+        if secs >= 86400:
+            return f"{secs / 86400:.1f}d"
+        elif secs >= 3600:
+            return f"{secs / 3600:.1f}h"
+        else:
+            return f"{secs // 60}m"
+    except:
+        return "?"
+
+# Check if key expiry is within 24h for warning
+key_expiry_warn = False
+if key_expires_at:
+    try:
+        from datetime import datetime, timezone
+        exp = datetime.fromisoformat(key_expires_at.replace("Z", "+00:00"))
+        key_expiry_warn = (exp - datetime.now(timezone.utc)).total_seconds() < 86400
+    except:
+        pass
+
+print("MODEL=" + shlex.quote(model))
+print("USED_PCT=" + str(used_pct))
+print("EFFORT=" + shlex.quote(effort))
+print("QUOTA_STATUS=" + shlex.quote(quota_status))
+print("QUOTA_5H_PCT=" + str(five_hour_pct))
+print("QUOTA_5H_REMAIN=" + shlex.quote(fmt_reset(five_hour_reset)))
+print("QUOTA_7D_PCT=" + str(seven_day_pct))
+print("QUOTA_7D_REMAIN=" + shlex.quote(fmt_reset(seven_day_reset)))
+print("KEY_EXPIRY_WARN=" + ("1" if key_expiry_warn else "0"))
+PYEOF
+)"
+[ -z "$MODEL" ] && exit 0
+
+# ── Shorten model name ────────────────────────────────────────
+short_model="$MODEL"
+case "$MODEL" in
+    *opus*4*6*|*4*6*opus*)       short_model="Opus 4.6" ;;
+    *opus*4*|*4*opus*)           short_model="Opus 4" ;;
+    *sonnet*4*6*|*4*6*sonnet*)   short_model="Sonnet 4.6" ;;
+    *sonnet*4*5*|*4*5*sonnet*)   short_model="Sonnet 4.5" ;;
+    *sonnet*4*|*4*sonnet*)       short_model="Sonnet 4" ;;
+    *sonnet*3*5*|*3*5*sonnet*)   short_model="Sonnet 3.5" ;;
+    *haiku*4*5*|*4*5*haiku*)     short_model="Haiku 4.5" ;;
+    *haiku*3*5*|*3*5*haiku*)     short_model="Haiku 3.5" ;;
+esac
+# Append context window size
+case "$MODEL" in
+    *opus*) short_model="$short_model 1M" ;;
+esac
+
+# ── Bar character + color from percentage ──────────────────────
+bar_char() {
+    local pct="$1"
+    local chars=("_" "▂" "▃" "▄" "▅" "▆" "▇" "█")
+    local colors=(34 70 106 142 178 214 208 196)
+    local idx=0
+    if   [ "$pct" -le 0 ]  2>/dev/null; then idx=0
+    elif [ "$pct" -le 12 ] 2>/dev/null; then idx=0
+    elif [ "$pct" -le 25 ] 2>/dev/null; then idx=1
+    elif [ "$pct" -le 37 ] 2>/dev/null; then idx=2
+    elif [ "$pct" -le 50 ] 2>/dev/null; then idx=3
+    elif [ "$pct" -le 62 ] 2>/dev/null; then idx=4
+    elif [ "$pct" -le 75 ] 2>/dev/null; then idx=5
+    elif [ "$pct" -le 87 ] 2>/dev/null; then idx=6
+    else idx=7
+    fi
+    echo "#[fg=colour${colors[$idx]}]${chars[$idx]}"
+}
+
+CTX_BAR=$(bar_char "$USED_PCT")
+
+# Quota values from bridge file (set by Python block above)
+QUOTA_5H_BAR=$(bar_char "$QUOTA_5H_PCT")
+QUOTA_7D_BAR=$(bar_char "$QUOTA_7D_PCT")
+
+# Determine quota text color: red on error/expiry, normal otherwise
+QUOTA_COLOR="colour7"
+case "$QUOTA_STATUS" in
+    expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
+    *) [ "${KEY_EXPIRY_WARN:-0}" = "1" ] && QUOTA_COLOR="colour196" ;;
+esac
+
+# ── Segment colors ─────────────────────────────────────────────
+# Pastel palette for each segment; bar chars retain their own percentage colors.
+C_MODEL="colour117"   # soft sky blue
+C_CTX="colour150"     # sage green
+C_5H="colour223"      # light peach/orange
+C_7D="colour186"      # soft wheat
+
+# Override quota colors on error/expiry
+if [ "$QUOTA_COLOR" = "colour196" ]; then
+    C_5H="colour196"
+    C_7D="colour196"
+fi
+
+# ── Output ─────────────────────────────────────────────────────
+# Build output — omit quota sections if no key configured
+if [ "$QUOTA_STATUS" = "no_key" ] || [ "$QUOTA_STATUS" = "none" ]; then
+    printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%%" \
+        "$short_model" \
+        "$EFFORT" \
+        "$CTX_BAR" "$USED_PCT"
+else
+    printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%% #[fg=colour8]│ #[fg=${C_5H}]%s: %s #[fg=${C_5H}]%s%% #[fg=colour8]│ #[fg=${C_7D}]%s: %s #[fg=${C_7D}]%s%%" \
+        "$short_model" \
+        "$EFFORT" \
+        "$CTX_BAR" "$USED_PCT" \
+        "$QUOTA_5H_REMAIN" "$QUOTA_5H_BAR" "$QUOTA_5H_PCT" \
+        "$QUOTA_7D_REMAIN" "$QUOTA_7D_BAR" "$QUOTA_7D_PCT"
+fi

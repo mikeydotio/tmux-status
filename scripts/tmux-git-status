@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# tmux-git-status — Filesystem path and git status for tmux status bar
+#
+# Output format: <relative-path> : <branch> (<status>)
+# Status indicators: dirty/clean, ↑n (ahead), ↓n (behind)
+# Outside git repos: shows path only.
+#
+# Usage: tmux-git-status <directory>
+# Called by tmux via: #(~/.local/bin/tmux-git-status "#{pane_current_path}")
+
+dir="$1"
+[ -z "$dir" ] && exit 0
+
+# Ensure HOME is set
+[ -z "$HOME" ] && HOME=$(eval echo ~)
+
+# Relative path (collapse home to ~)
+rel="${dir/$HOME/\~}"
+
+# Check if in a git repo
+if ! git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "$rel"
+    exit 0
+fi
+
+# Branch name
+branch=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || git -C "$dir" rev-parse --short HEAD 2>/dev/null)
+
+# Status: dirty/clean + ahead/behind
+dirty=""
+if ! git -C "$dir" diff --quiet 2>/dev/null || ! git -C "$dir" diff --cached --quiet 2>/dev/null; then
+    dirty="dirty"
+elif [ -n "$(git -C "$dir" ls-files --others --exclude-standard "$dir" 2>/dev/null | head -1)" ]; then
+    dirty="dirty"
+fi
+
+ahead_behind=$(git -C "$dir" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
+if [ -n "$ahead_behind" ]; then
+    ahead=$(echo "$ahead_behind" | cut -f1)
+    behind=$(echo "$ahead_behind" | cut -f2)
+    parts=()
+    [ "$dirty" = "dirty" ] && parts+=("dirty")
+    [ "$ahead" -gt 0 ] 2>/dev/null && parts+=("↑${ahead}")
+    [ "$behind" -gt 0 ] 2>/dev/null && parts+=("↓${behind}")
+    [ ${#parts[@]} -eq 0 ] && parts+=("clean")
+    status_str=$(IFS=', '; echo "${parts[*]}")
+else
+    status_str="${dirty:-clean}"
+fi
+
+echo "$rel : $branch ($status_str)"
