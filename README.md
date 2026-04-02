@@ -27,6 +27,23 @@ The status bar has three lines, rendered at the bottom of the terminal:
          inactive active   inactive
 ```
 
+### Top Banner (optional)
+
+A bold, centered hostname banner at the top of each pane using double-line box-drawing:
+
+```
+═══════════════════════╣ MYHOST ╠═══════════════════════
+```
+
+Disabled by default. Enable in `settings.conf`:
+
+```bash
+TOP_BANNER=true
+# TOP_BANNER_COLOR=208   # 256-color code (default: orange)
+```
+
+Uses `pane-border-status top` with `pane-border-lines double`, so enabling the banner also sets `pane-border-style` and `pane-active-border-style` to the banner color. In multi-pane layouts, each pane gets its own banner and the divider borders match.
+
 ### Color Reference
 
 Context and quota bars use a color-coded gradient that shifts from cool to warm as usage increases:
@@ -55,6 +72,7 @@ Segment labels use a pastel palette:
 | Inactive tab | Blue/white    | 4/7       |
 | Activity     | Yellow        | 3         |
 | Clock        | Blue brackets | 4         |
+| Top banner   | Orange        | 208       |
 
 ## Install
 
@@ -108,6 +126,12 @@ Edit `~/.config/tmux-status/settings.conf`:
 ```bash
 # Use 24-hour clock format (default: false)
 CLOCK_24H=true
+
+# Show hostname banner at the top of each pane (default: false)
+TOP_BANNER=true
+
+# Banner color — 256-color code (default: 208 = orange)
+# TOP_BANNER_COLOR=208
 ```
 
 After editing, reload tmux config to apply.
@@ -145,12 +169,13 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 
 ## What It Sets (and What It Doesn't)
 
-**Sets** (status bar only):
+**Sets** (status bar and optional banner):
 - 3-line status bar layout and formatting
 - Window tab styling (blue borders, yellow activity, bold active)
 - Status-left (hostname) and status-right (clock)
 - Activity monitoring
 - Automatic window naming (with Claude `✧` prefix detection)
+- Pane border status/style (only when `TOP_BANNER=true`)
 
 **Does NOT touch:**
 - Prefix key

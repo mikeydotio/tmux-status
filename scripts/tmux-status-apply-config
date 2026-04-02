@@ -10,13 +10,35 @@ CONFIG_FILE="${CONFIG_DIR}/settings.conf"
 
 # ── Defaults ───────────────────────────────────────────────────
 CLOCK_24H=false
+TOP_BANNER=false
+TOP_BANNER_COLOR=208
 
 # ── Load user settings ─────────────────────────────────────────
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+# ── Sanitize ───────────────────────────────────────────────────
+[[ "$TOP_BANNER_COLOR" =~ ^[0-9]+$ ]] || TOP_BANNER_COLOR=208
 
 # ── Apply clock format ─────────────────────────────────────────
 if [ "$CLOCK_24H" = "true" ]; then
     tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%H:%M#[fg=colour4]」'
 else
     tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%-l:%M#[fg=colour4]」'
+fi
+
+# ── Apply top banner ──────────────────────────────────────────
+# Uses pane-border-status to render a hostname banner at the top of
+# each pane, framed by double-line box-drawing characters (═══╣ ╠═══).
+if [ "$TOP_BANNER" = "true" ]; then
+    tmux set -g pane-border-status top
+    tmux set -g pane-border-lines double
+    tmux set -g pane-active-border-style "fg=colour${TOP_BANNER_COLOR}"
+    tmux set -g pane-border-style "fg=colour${TOP_BANNER_COLOR}"
+    tmux set -g pane-border-format '#[align=centre,bold]╣ #(hostname -s | tr a-z A-Z) ╠'
+else
+    tmux set -gu pane-border-status
+    tmux set -gu pane-border-lines
+    tmux set -gu pane-active-border-style
+    tmux set -gu pane-border-style
+    tmux set -gu pane-border-format
 fi
