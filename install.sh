@@ -19,7 +19,9 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
 SOURCE_MARKER="tmux-status/overlay/status.conf"
 
 # Scripts to symlink into ~/.local/bin/
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux-status-quota-fetch tmux-status-quota-poll)
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+STATUSLINE_CMD='node ~/.local/bin/tmux-status-context-hook.js'
 
 # ── Helpers ────────────────────────────────────────────────────
 info()  { printf '\033[1;34m[tmux-status]\033[0m %s\n' "$1"; }
@@ -159,6 +161,54 @@ TMUXLINE
     ok "Added source line to $TMUX_CONF"
 fi
 
+# ── Configure Claude Code statusLine hook ─────────────────────
+# The statusLine hook provides real-time context window usage data.
+# Without it, the context % in the status bar will always show 0%.
+info "Configuring Claude Code statusLine hook..."
+
+if [ -f "$CLAUDE_SETTINGS" ]; then
+    # Check if a statusLine is already configured
+    existing_sl=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CLAUDE_SETTINGS'))
+    sl = d.get('statusLine', {})
+    print(sl.get('command', ''))
+except: pass
+" 2>/dev/null)
+
+    if [ -z "$existing_sl" ]; then
+        # No statusLine configured — add ours
+        python3 -c "
+import json
+path = '$CLAUDE_SETTINGS'
+d = json.load(open(path))
+d['statusLine'] = {'type': 'command', 'command': 'node ~/.local/bin/tmux-status-context-hook.js'}
+with open(path, 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\n')
+" 2>/dev/null && ok "Claude Code statusLine hook configured" || warn "Could not update $CLAUDE_SETTINGS"
+    elif echo "$existing_sl" | grep -qF "tmux-status-context-hook"; then
+        info "Claude Code statusLine hook already configured"
+    else
+        warn "Claude Code statusLine already configured with a different command:"
+        echo "    $existing_sl"
+        echo "  To use tmux-status context tracking, update ~/.claude/settings.json:"
+        echo "    \"statusLine\": {\"type\": \"command\", \"command\": \"$STATUSLINE_CMD\"}"
+    fi
+else
+    # No settings.json — create a minimal one
+    if [ -d "$HOME/.claude" ]; then
+        echo '{"statusLine": {"type": "command", "command": "node ~/.local/bin/tmux-status-context-hook.js"}}' | python3 -m json.tool > "$CLAUDE_SETTINGS" 2>/dev/null \
+            && ok "Created $CLAUDE_SETTINGS with statusLine hook" \
+            || warn "Could not create $CLAUDE_SETTINGS"
+    else
+        warn "Claude Code not installed (~/.claude/ not found). Context % will show 0%."
+        echo "  After installing Claude Code, add to ~/.claude/settings.json:"
+        echo "    \"statusLine\": {\"type\": \"command\", \"command\": \"$STATUSLINE_CMD\"}"
+    fi
+fi
+
 # ── PATH check ─────────────────────────────────────────────────
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
@@ -171,6 +221,20 @@ case ":$PATH:" in
         echo "  called with full paths). But tmux-status-session needs PATH."
         ;;
 esac
+
+# ── Check optional quota dependencies ──────────────────────────
+info "Checking optional quota display dependencies..."
+if python3 -c "from curl_cffi import requests" 2>/dev/null; then
+    ok "curl_cffi found — quota display available"
+    echo "  To enable quota polling, create a session key file:"
+    echo "    \$EDITOR $CONFIG_DIR/claude-usage-key.json"
+    echo "  Then start the poller: nohup tmux-status-quota-poll &"
+else
+    info "curl_cffi not installed — quota display will be disabled (optional)"
+    echo "  To enable quota bars, install curl_cffi:"
+    echo "    pip3 install curl-cffi"
+    echo "  Then configure a session key and start the poller. See README."
+fi
 
 # ── Done ───────────────────────────────────────────────────────
 echo ""

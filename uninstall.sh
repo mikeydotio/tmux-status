@@ -17,7 +17,8 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 COMMENT_MARKER="tmux-status: 3-line status bar"
 
 # Scripts that were symlinked
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux-status-quota-fetch tmux-status-quota-poll)
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 
 # ── Helpers ────────────────────────────────────────────────────
 info()  { printf '\033[1;34m[tmux-status]\033[0m %s\n' "$1"; }
@@ -92,6 +93,40 @@ for script in "${SCRIPTS[@]}"; do
     fi
 done
 ok "Symlinks removed"
+
+# ── Remove Claude Code statusLine hook ─────────────────────────
+if [ -f "$CLAUDE_SETTINGS" ]; then
+    existing_sl=$(python3 -c "
+import json
+try:
+    d = json.load(open('$CLAUDE_SETTINGS'))
+    print(d.get('statusLine', {}).get('command', ''))
+except: pass
+" 2>/dev/null)
+    if echo "$existing_sl" | grep -qF "tmux-status-context-hook"; then
+        info "Removing Claude Code statusLine hook..."
+        python3 -c "
+import json
+path = '$CLAUDE_SETTINGS'
+d = json.load(open(path))
+d.pop('statusLine', None)
+with open(path, 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\n')
+" 2>/dev/null && ok "Claude Code statusLine hook removed" || warn "Could not update $CLAUDE_SETTINGS"
+    fi
+fi
+
+# ── Clean up cache directory ──────────────────────────────────
+CACHE_DIR="$HOME/.cache/tmux-status"
+if [ -d "$CACHE_DIR" ]; then
+    if ask_yn "Remove cache at $CACHE_DIR?"; then
+        rm -rf "$CACHE_DIR"
+        ok "Cache removed"
+    else
+        info "Cache preserved at $CACHE_DIR"
+    fi
+fi
 
 # ── Optional: remove config directory ──────────────────────────
 if [ -d "$CONFIG_DIR" ]; then

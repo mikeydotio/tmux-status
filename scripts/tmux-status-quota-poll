@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""
+tmux-status-quota-poll — Background daemon for periodic quota updates
+
+Polling daemon that periodically invokes tmux-status-quota-fetch.
+The poll interval is re-read from settings.conf on every iteration so changes
+take effect without a restart. SIGUSR1 triggers an immediate fetch cycle.
+SIGTERM/SIGINT trigger clean shutdown.
+
+Usage:
+  tmux-status-quota-poll              # run in foreground (for testing)
+  tmux-status-quota-poll &            # run as background daemon
+  nohup tmux-status-quota-poll &      # survive terminal close
+"""
+
+import logging
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+HOME = os.path.expanduser("~")
+CONFIG_DIR = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
+SETTINGS_FILE = os.path.join(CONFIG_DIR, "tmux-status", "settings.conf")
+
+# Locate the fetch script relative to this script's directory
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+FETCH_SCRIPT = os.path.join(SCRIPT_DIR, "tmux-status-quota-fetch")
+# Fallback to ~/.local/bin/ if running from an installed symlink
+if not os.path.exists(FETCH_SCRIPT):
+    FETCH_SCRIPT = os.path.join(HOME, ".local", "bin", "tmux-status-quota-fetch")
+
+DEFAULT_INTERVAL = 300
+MIN_INTERVAL = 30
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    format="%(asctime)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+    stream=sys.stdout,
+)
+log = logging.getLogger("tmux-status-quota-poll")
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+wake_event = threading.Event()
+shutdown_requested = False
+
+
+# ---------------------------------------------------------------------------
+# Signal handlers
+# ---------------------------------------------------------------------------
+
+def handle_shutdown(signum, _frame):
+    """Handle SIGTERM/SIGINT — request clean shutdown."""
+    global shutdown_requested
+    sig_name = signal.Signals(signum).name
+    log.info("Received %s, shutting down", sig_name)
+    shutdown_requested = True
+    wake_event.set()
+
+
+def handle_usr1(_signum, _frame):
+    """Handle SIGUSR1 — wake the polling loop for an immediate fetch."""
+    log.info("Received SIGUSR1, triggering immediate fetch")
+    wake_event.set()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def get_interval():
+    """
+    Read QUOTA_REFRESH from settings.conf.
+
+    Re-reads the file on every call so runtime changes take effect without
+    restarting the daemon.
+    """
+    try:
+        with open(SETTINGS_FILE) as f:
+            text = f.read()
+        m = re.search(r"QUOTA_REFRESH=['\"]?(\d+)", text)
+        if m:
+            return max(MIN_INTERVAL, int(m.group(1)))
+    except Exception:
+        pass
+    return DEFAULT_INTERVAL
+
+
+def fetch_once():
+    """
+    Run the one-shot fetch script. Returns True on success, False on failure.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, FETCH_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            log.warning("Fetch exited %d: %s", result.returncode, stderr or "(no stderr)")
+        return result.returncode == 0
+
+    except subprocess.TimeoutExpired:
+        log.error("Fetch timed out after 30s")
+        return False
+    except Exception as e:
+        log.error("Fetch failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+def main():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGUSR1, handle_usr1)
+
+    log.info("Daemon starting (pid %d)", os.getpid())
+
+    while not shutdown_requested:
+        log.info("Fetching quota data")
+        ok = fetch_once()
+        if ok:
+            log.info("Fetch complete")
+        else:
+            log.warning("Fetch encountered an issue (will retry next cycle)")
+
+        if shutdown_requested:
+            break
+
+        interval = get_interval()
+        log.info("Sleeping %ds (next fetch at %s)",
+                 interval,
+                 time.strftime("%H:%M:%S", time.localtime(time.time() + interval)))
+        wake_event.clear()
+        wake_event.wait(timeout=interval)
+
+    log.info("Daemon stopped")
+
+
+if __name__ == "__main__":
+    main()

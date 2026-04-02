@@ -94,20 +94,26 @@ for line in reversed(data.strip().split("\n")):
                     break
 
 # Read context % from bridge file (written by statusline hook, authoritative)
+# Check tmux-status path first, fall back to legacy coderig path.
 if conversation_id:
-    bridge = os.path.join(os.path.expanduser("~"), ".cache", "coderig", f"claude-ctx-{conversation_id}.json")
-    try:
-        bd = json.load(open(bridge))
-        if time.time() - bd.get("timestamp", 0) < 1800:
-            used_pct = bd.get("used_pct", used_pct)
-    except:
-        pass
+    _home = os.path.expanduser("~")
+    for _cache_dir in [os.path.join(_home, ".cache", "tmux-status"),
+                       os.path.join(_home, ".cache", "coderig")]:
+        bridge = os.path.join(_cache_dir, f"claude-ctx-{conversation_id}.json")
+        try:
+            bd = json.load(open(bridge))
+            if time.time() - bd.get("timestamp", 0) < 1800:
+                used_pct = bd.get("used_pct", used_pct)
+                break
+        except:
+            continue
 
-# Read quota from host-provided bridge file (bind mount) or local cache
-import os as _os
+# Read quota from bridge file (tmux-status path first, legacy coderig fallback)
+_home = os.path.expanduser("~")
 quota_bridge = None
-for _qpath in ["/mnt/host-claude-quota", _os.path.join(_os.path.expanduser("~"), ".cache", "coderig", "claude-quota.json")]:
-    if _os.path.exists(_qpath):
+for _qpath in [os.path.join(_home, ".cache", "tmux-status", "claude-quota.json"),
+               os.path.join(_home, ".cache", "coderig", "claude-quota.json")]:
+    if os.path.exists(_qpath):
         quota_bridge = _qpath
         break
 quota_status = "none"

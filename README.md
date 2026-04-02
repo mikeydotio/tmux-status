@@ -67,6 +67,7 @@ This will:
 2. Symlink scripts to `~/.local/bin/`
 3. Create default config at `~/.config/tmux-status/`
 4. Add one `source-file` line to your tmux.conf
+5. Configure the Claude Code statusLine hook for real-time context tracking
 
 Then reload tmux:
 
@@ -163,10 +164,15 @@ The overlay is sourced at the end of your tmux.conf, so it wins on status-bar op
 
 ## Dependencies
 
+**Required:**
 - **tmux 3.2+** (multi-line status support)
 - **bash**
-- **python3** (used by Claude status script)
+- **python3** (used by Claude status and session launcher scripts)
 - **git**
+- **node** (used by the Claude Code statusLine hook)
+
+**Optional** (for quota display):
+- **curl_cffi** (`pip3 install curl-cffi`) — needed by the quota fetcher
 
 Works on both **macOS** and **Linux**.
 
@@ -182,12 +188,51 @@ This overlay file sets only status-bar-related tmux options. Scripts are symlink
 
 ### Claude Code Integration
 
-Line 0 of the status bar shows Claude Code session metadata by:
-1. Walking the process tree from the pane PID to find a running Claude process
-2. Reading the session transcript (`.jsonl`) to extract model name and effort level
-3. Reading bridge files for real-time context usage and API quota data
+Line 0 of the status bar shows Claude Code session metadata. There are three data sources, each independent:
+
+**Model + Effort** (always available):
+- The script walks the process tree from the tmux pane PID to find a running Claude process
+- Reads the session transcript (`.jsonl`) to extract the model name and effort level
+
+**Context %** (requires statusLine hook):
+- The installer configures a Claude Code `statusLine` hook in `~/.claude/settings.json`
+- This hook (`tmux-status-context-hook.js`) writes real-time context window usage to `~/.cache/tmux-status/`
+- The status bar reads this bridge file every 5 seconds
+- Without the hook, context % shows 0%
+
+**Quota bars** (optional, requires setup):
+- Quota display shows 5-hour and 7-day API utilization from claude.ai
+- Requires a session key and the quota polling daemon (see below)
+- Without it, quota bars are simply omitted from the display
 
 When the active pane isn't running Claude, line 0 is empty (a blank spacer line).
+
+### Quota Display Setup (Optional)
+
+To enable the 5-hour and 7-day quota bars:
+
+1. **Install curl_cffi** (needed to bypass Cloudflare):
+   ```bash
+   pip3 install curl-cffi
+   ```
+
+2. **Create a session key file** at `~/.config/tmux-status/claude-usage-key.json`:
+   ```json
+   {"sessionKey": "sk-ant-...", "expiresAt": "2026-05-01T00:00:00Z"}
+   ```
+   Get your session key from your browser's cookies on claude.ai (the `sessionKey` cookie).
+
+3. **Start the polling daemon**:
+   ```bash
+   nohup tmux-status-quota-poll > /dev/null 2>&1 &
+   ```
+   The daemon fetches quota data every 5 minutes (configurable via `QUOTA_REFRESH` in `settings.conf`). To run it persistently, add it to your shell rc or a systemd/launchd service.
+
+4. **Test it manually** (one-shot fetch):
+   ```bash
+   tmux-status-quota-fetch
+   cat ~/.cache/tmux-status/claude-quota.json
+   ```
 
 ## Update
 
