@@ -114,13 +114,14 @@ class TestMainModule(unittest.TestCase):
             source = f.read()
         self.assertIn('if __name__ == "__main__"', source)
 
-    def test_main_exits_with_nonzero(self):
-        """Placeholder main() exits with non-zero (server not yet implemented)."""
-        from tmux_status_server.__main__ import main
+    def test_main_delegates_to_server(self):
+        """main() delegates to server.main() which starts the HTTP server."""
+        from unittest import mock
 
-        with self.assertRaises(SystemExit) as cm:
+        with mock.patch("tmux_status_server.__main__._server_main") as mock_server_main:
+            from tmux_status_server.__main__ import main
             main()
-        self.assertNotEqual(cm.exception.code, 0)
+            mock_server_main.assert_called_once()
 
 
 class TestPyprojectToml(unittest.TestCase):
@@ -171,20 +172,27 @@ class TestModuleRunnable(unittest.TestCase):
     """Test that python -m tmux_status_server is runnable."""
 
     def test_python_m_invocation(self):
-        """python -m tmux_status_server exits (placeholder) without crashing."""
+        """python -m tmux_status_server module is importable and entry point resolves.
+
+        The server requires bottle at runtime (lazy import in QuotaServer.__init__).
+        We verify the module and entry point import correctly in a subprocess.
+        """
         import subprocess
 
         result = subprocess.run(
-            [sys.executable, "-m", "tmux_status_server"],
+            [
+                sys.executable, "-c",
+                "from tmux_status_server.__main__ import main; "
+                "assert callable(main); print('ok')",
+            ],
             capture_output=True,
             text=True,
             cwd=os.path.join(os.path.dirname(__file__), ".."),
             timeout=10,
         )
-        # The placeholder main() should exit with code 1
-        self.assertEqual(result.returncode, 1)
-        # Should not produce a traceback
+        self.assertEqual(result.returncode, 0)
         self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("ok", result.stdout)
 
 
 if __name__ == "__main__":
