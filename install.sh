@@ -222,23 +222,67 @@ case ":$PATH:" in
         ;;
 esac
 
-# ── Check optional quota dependencies ──────────────────────────
-info "Checking optional quota display dependencies..."
-if python3 -c "from curl_cffi import requests" 2>/dev/null; then
-    ok "curl_cffi found — quota display available"
-    echo "  To enable quota polling, create a session key file:"
-    echo "    \$EDITOR $CONFIG_DIR/claude-usage-key.json"
-    echo "  Then start the poller: nohup tmux-status-quota-poll &"
+# ── Install server package ────────────────────────────────────
+info "Installing tmux-status-server package..."
+if pip3 install "$INSTALL_DIR/server/" 2>/dev/null; then
+    ok "Server package installed"
 else
-    info "curl_cffi not installed — quota display will be disabled (optional)"
-    echo "  To enable quota bars, install curl_cffi:"
-    echo "    pip3 install curl-cffi"
-    echo "  Then configure a session key and start the poller. See README."
+    warn "pip3 install failed — trying pip..."
+    if pip install "$INSTALL_DIR/server/" 2>/dev/null; then
+        ok "Server package installed (via pip)"
+    else
+        error "Could not install server package. Ensure pip3 or pip is available."
+        exit 1
+    fi
+fi
+
+# ── Kill old quota-poll processes ─────────────────────────────
+if pgrep -f 'tmux-status-quota-poll' >/dev/null 2>&1; then
+    info "Migrating from legacy quota poller to server-based quota..."
+    pkill -f 'tmux-status-quota-poll' 2>/dev/null || true
+    ok "Stopped old tmux-status-quota-poll processes (replaced by tmux-status-server)"
+fi
+
+# ── Install and start daemon (systemd/launchd) ───────────────
+OS_TYPE="$(uname -s)"
+info "Setting up tmux-status-server daemon ($OS_TYPE)..."
+
+if [ "$OS_TYPE" = "Linux" ]; then
+    # systemd user unit
+    SYSTEMD_DIR="$HOME/.config/systemd/user"
+    SYSTEMD_UNIT="$SYSTEMD_DIR/tmux-status-server.service"
+    mkdir -p "$SYSTEMD_DIR"
+    cp "$INSTALL_DIR/server/deploy/tmux-status-server.service" "$SYSTEMD_UNIT"
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now tmux-status-server 2>/dev/null || true
+    ok "systemd user unit installed and started"
+elif [ "$OS_TYPE" = "Darwin" ]; then
+    # launchd plist
+    LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+    LAUNCHD_PLIST="$LAUNCHD_DIR/io.mikey.tmux-status-server.plist"
+    mkdir -p "$LAUNCHD_DIR"
+    cp "$INSTALL_DIR/server/deploy/io.mikey.tmux-status-server.plist" "$LAUNCHD_PLIST"
+    launchctl load "$LAUNCHD_PLIST" 2>/dev/null || true
+    ok "launchd plist installed and loaded"
+else
+    warn "Unknown OS ($OS_TYPE) — skipping daemon setup"
+    echo "  You can run the server manually: tmux-status-server"
 fi
 
 # ── Done ───────────────────────────────────────────────────────
 echo ""
 ok "tmux-status installed successfully!"
+echo ""
+echo "  The quota server is running at http://127.0.0.1:7850"
+echo ""
+echo "  Check server status:"
+if [ "$OS_TYPE" = "Linux" ]; then
+    echo "    systemctl --user status tmux-status-server"
+elif [ "$OS_TYPE" = "Darwin" ]; then
+    echo "    launchctl list | grep tmux-status-server"
+else
+    echo "    curl -s http://127.0.0.1:7850/health"
+fi
 echo ""
 echo "  Reload tmux config:"
 echo "    tmux source-file $TMUX_CONF"
