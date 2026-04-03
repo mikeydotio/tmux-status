@@ -4,3 +4,5 @@
 {"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-7","relation":"blocks"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-8","relation":"blocks"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}
+{"kind":"StoryStateChanged","at":"2026-04-03T19:24:28Z","state":"in-progress"}
+{"kind":"StoryStateChanged","at":"2026-04-03T19:28:22Z","state":"verifying"}
