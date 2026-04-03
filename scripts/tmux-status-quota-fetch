@@ -2,9 +2,10 @@
 """
 tmux-status-quota-fetch — Fetch Claude API usage quota
 
-Fetches Claude usage quota data from the claude.ai API and writes it to a
-bridge file at ~/.cache/tmux-status/claude-quota.json. The bridge file is
-read by tmux-claude-status to display quota bars in the status bar.
+Fetches Claude usage quota data from the claude.ai API and writes it to the
+quota bridge file (configurable via QUOTA_DATA_PATH in settings.conf, default
+~/.cache/tmux-status/claude-quota.json). The bridge file is read by
+tmux-claude-status to display quota bars in the status bar.
 
 Uses aggressive caching to avoid unnecessary API calls — exits immediately
 when the bridge file is still fresh.
@@ -25,8 +26,29 @@ import sys
 import time
 
 HOME = os.path.expanduser("~")
-CACHE_DIR = os.path.join(HOME, ".cache", "tmux-status")
-BRIDGE_FILE = os.path.join(CACHE_DIR, "claude-quota.json")
+CONFIG_DIR = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
+SETTINGS_FILE = os.path.join(CONFIG_DIR, "tmux-status", "settings.conf")
+
+def _read_quota_data_path():
+    """Read QUOTA_DATA_PATH from settings.conf, default to ~/.cache/tmux-status/claude-quota.json."""
+    default = os.path.join(HOME, ".cache", "tmux-status", "claude-quota.json")
+    try:
+        with open(SETTINGS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == "QUOTA_DATA_PATH":
+                    v = v.strip().strip("'\"")
+                    v = os.path.expanduser(v)
+                    return v if v else default
+    except Exception:
+        pass
+    return default
+
+BRIDGE_FILE = _read_quota_data_path()
+CACHE_DIR = os.path.dirname(BRIDGE_FILE)
 
 DEFAULT_FETCH_INTERVAL = 60
 ERROR_FETCH_INTERVAL = 300
@@ -89,21 +111,16 @@ def read_session_key():
 
     Search order:
       1. ~/.config/tmux-status/claude-usage-key.json
-      2. ~/.config/coderig/claude-usage-key.json (legacy fallback)
-      3. CLAUDE_USAGE_KEY env var
+      2. CLAUDE_USAGE_KEY env var
     """
     config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
-    locations = [
-        os.path.join(config_dir, "tmux-status", "claude-usage-key.json"),
-        os.path.join(HOME, ".config", "coderig", "claude-usage-key.json"),
-    ]
+    key_file = os.path.join(config_dir, "tmux-status", "claude-usage-key.json")
 
-    for loc in locations:
-        try:
-            raw = open(loc).read().strip()
-            return parse_key_data(raw)
-        except Exception:
-            continue
+    try:
+        raw = open(key_file).read().strip()
+        return parse_key_data(raw)
+    except Exception:
+        pass
 
     # Env var fallback
     env_val = os.environ.get("CLAUDE_USAGE_KEY", "").strip()

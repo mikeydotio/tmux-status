@@ -35,10 +35,10 @@ A bold, centered hostname banner at the top of each pane using double-line box-d
 ═══════════════════════╣ MYHOST ╠═══════════════════════
 ```
 
-Disabled by default. Enable in `settings.conf`:
+Enabled by default. Disable in `settings.conf`:
 
 ```bash
-TOP_BANNER=true
+SHOW_TOP_BANNER=false
 # TOP_BANNER_COLOR=208   # 256-color code (default: orange)
 ```
 
@@ -127,8 +127,8 @@ Edit `~/.config/tmux-status/settings.conf`:
 # Use 24-hour clock format (default: false)
 CLOCK_24H=true
 
-# Show hostname banner at the top of each pane (default: false)
-TOP_BANNER=true
+# Show hostname banner at the top of each pane (default: true)
+SHOW_TOP_BANNER=true
 
 # Banner color — 256-color code (default: 208 = orange)
 # TOP_BANNER_COLOR=208
@@ -175,7 +175,7 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 - Status-left (hostname) and status-right (clock)
 - Activity monitoring
 - Automatic window naming (with Claude `✧` prefix detection)
-- Pane border status/style (only when `TOP_BANNER=true`)
+- Pane border status/style (only when `SHOW_TOP_BANNER=true`)
 
 **Does NOT touch:**
 - Prefix key
@@ -251,7 +251,7 @@ To enable the 5-hour and 7-day quota bars:
    ```bash
    nohup tmux-status-quota-poll > /dev/null 2>&1 &
    ```
-   The daemon fetches quota data every 5 minutes (configurable via `QUOTA_REFRESH` in `settings.conf`). To run it persistently, add it to your shell rc or a systemd/launchd service.
+   The daemon fetches quota data every 5 minutes (configurable via `QUOTA_REFRESH_PERIOD` in `settings.conf`; set to `0` to disable polling). To run it persistently, add it to your shell rc or a systemd/launchd service.
 
 4. **Test it manually** (one-shot fetch):
    ```bash

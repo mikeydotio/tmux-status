@@ -3,7 +3,8 @@
 tmux-status-quota-poll — Background daemon for periodic quota updates
 
 Polling daemon that periodically invokes tmux-status-quota-fetch.
-The poll interval is re-read from settings.conf on every iteration so changes
+The poll interval is re-read from QUOTA_REFRESH_PERIOD in settings.conf on every
+iteration so changes
 take effect without a restart. SIGUSR1 triggers an immediate fetch cycle.
 SIGTERM/SIGINT trigger clean shutdown.
 
@@ -85,17 +86,20 @@ def handle_usr1(_signum, _frame):
 
 def get_interval():
     """
-    Read QUOTA_REFRESH from settings.conf.
+    Read QUOTA_REFRESH_PERIOD from settings.conf.
 
     Re-reads the file on every call so runtime changes take effect without
-    restarting the daemon.
+    restarting the daemon.  Returns 0 when polling is disabled.
     """
     try:
         with open(SETTINGS_FILE) as f:
             text = f.read()
-        m = re.search(r"QUOTA_REFRESH=['\"]?(\d+)", text)
+        m = re.search(r"QUOTA_REFRESH_PERIOD=['\"]?(\d+)", text)
         if m:
-            return max(MIN_INTERVAL, int(m.group(1)))
+            val = int(m.group(1))
+            if val == 0:
+                return 0
+            return max(MIN_INTERVAL, val)
     except Exception:
         pass
     return DEFAULT_INTERVAL
@@ -137,6 +141,14 @@ def main():
     log.info("Daemon starting (pid %d)", os.getpid())
 
     while not shutdown_requested:
+        interval = get_interval()
+
+        if interval == 0:
+            log.info("Polling disabled (QUOTA_REFRESH_PERIOD=0), sleeping")
+            wake_event.clear()
+            wake_event.wait(timeout=60)
+            continue
+
         log.info("Fetching quota data")
         ok = fetch_once()
         if ok:
@@ -147,7 +159,6 @@ def main():
         if shutdown_requested:
             break
 
-        interval = get_interval()
         log.info("Sleeping %ds (next fetch at %s)",
                  interval,
                  time.strftime("%H:%M:%S", time.localtime(time.time() + interval)))

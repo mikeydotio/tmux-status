@@ -108,14 +108,28 @@ if conversation_id:
         except:
             continue
 
-# Read quota from bridge file (tmux-status path first, legacy coderig fallback)
+# Read quota bridge path from settings.conf (QUOTA_DATA_PATH), default to cache dir
 _home = os.path.expanduser("~")
-quota_bridge = None
-for _qpath in [os.path.join(_home, ".cache", "tmux-status", "claude-quota.json"),
-               os.path.join(_home, ".cache", "coderig", "claude-quota.json")]:
-    if os.path.exists(_qpath):
-        quota_bridge = _qpath
-        break
+_config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(_home, ".config"))
+_settings_file = os.path.join(_config_dir, "tmux-status", "settings.conf")
+quota_bridge = os.path.join(_home, ".cache", "tmux-status", "claude-quota.json")
+try:
+    with open(_settings_file) as _sf:
+        for _line in _sf:
+            _line = _line.strip()
+            if _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            if _k.strip() == "QUOTA_DATA_PATH":
+                _v = _v.strip().strip("'\"")
+                _v = os.path.expanduser(_v)
+                if _v:
+                    quota_bridge = _v
+                break
+except Exception:
+    pass
+if not os.path.exists(quota_bridge):
+    quota_bridge = None
 quota_status = "none"
 five_hour_pct = 0
 five_hour_reset = ""

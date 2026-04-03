@@ -33,8 +33,8 @@ The system has three independent data pipelines that feed into tmux's status bar
 
 ### Quota Fetching (optional background daemon)
 
-- **`scripts/tmux-status-quota-poll`** (Python) — Background daemon that calls `tmux-status-quota-fetch` at intervals (configurable via `QUOTA_REFRESH` in `settings.conf`). Handles SIGUSR1 (immediate fetch), SIGTERM/SIGINT (clean shutdown).
-- **`scripts/tmux-status-quota-fetch`** (Python) — Fetches 5-hour and 7-day API quota from claude.ai using `curl_cffi` (Chrome TLS impersonation to bypass Cloudflare). Reads session key from `~/.config/tmux-status/claude-usage-key.json`. Writes atomic JSON to `~/.cache/tmux-status/claude-quota.json`.
+- **`scripts/tmux-status-quota-poll`** (Python) — Background daemon that calls `tmux-status-quota-fetch` at intervals (configurable via `QUOTA_REFRESH_PERIOD` in `settings.conf`; `0` disables polling). Handles SIGUSR1 (immediate fetch), SIGTERM/SIGINT (clean shutdown).
+- **`scripts/tmux-status-quota-fetch`** (Python) — Fetches 5-hour and 7-day API quota from claude.ai using `curl_cffi` (Chrome TLS impersonation to bypass Cloudflare). Reads session key from `~/.config/tmux-status/claude-usage-key.json`. Writes atomic JSON to the quota bridge file (configurable via `QUOTA_DATA_PATH` in `settings.conf`, default `~/.cache/tmux-status/claude-quota.json`).
 
 ### Session Launcher (optional)
 
@@ -48,7 +48,7 @@ The system has three independent data pipelines that feed into tmux's status bar
 | `~/.config/tmux-status/windows.json` | Session launcher config |
 | `~/.config/tmux-status/claude-usage-key.json` | Session key for quota API |
 | `~/.cache/tmux-status/claude-ctx-*.json` | Context bridge files (written by hook) |
-| `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by daemon) |
+| `~/.cache/tmux-status/claude-quota.json` | Quota cache — default, configurable via `QUOTA_DATA_PATH` |
 
 ## Conventions
 

@@ -10,7 +10,7 @@ CONFIG_FILE="${CONFIG_DIR}/settings.conf"
 
 # ── Defaults ───────────────────────────────────────────────────
 CLOCK_24H=false
-TOP_BANNER=false
+SHOW_TOP_BANNER=true
 TOP_BANNER_COLOR=208
 
 # ── Load user settings ─────────────────────────────────────────
@@ -29,7 +29,7 @@ fi
 # ── Apply top banner ──────────────────────────────────────────
 # Uses pane-border-status to render a hostname banner at the top of
 # each pane, framed by double-line box-drawing characters (═══╣ ╠═══).
-if [ "$TOP_BANNER" = "true" ]; then
+if [ "$SHOW_TOP_BANNER" = "true" ]; then
     tmux set -g pane-border-status top
     tmux set -g pane-border-lines double
     tmux set -g pane-active-border-style "fg=colour${TOP_BANNER_COLOR}"
