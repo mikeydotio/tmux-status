@@ -513,5 +513,150 @@ class TestImportVerification(unittest.TestCase):
                 self.fail(f"urllib reference found: {stripped}")
 
 
+# ---------------------------------------------------------------------------
+# Validate: fetch_quota success response completeness
+# ---------------------------------------------------------------------------
+
+class TestFetchQuotaResponseContract(unittest.TestCase):
+    """Verify the full bridge-format contract for successful responses."""
+
+    def setUp(self):
+        scraper._org_uuid = None
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_success_response_has_all_required_keys(self, mock_get):
+        """Success response has status, org_uuid, five_hour, seven_day, timestamp."""
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-test"}]),
+            (200, {
+                "five_hour": {"utilization": 42, "resets_at": "2026-04-03T18:30:00Z"},
+                "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
+            }),
+        ]
+        result = fetch_quota("sk-ant-test")
+        for key in ("status", "org_uuid", "five_hour", "seven_day", "timestamp"):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_success_five_hour_has_utilization_and_resets_at(self, mock_get):
+        """five_hour sub-dict has both utilization and resets_at keys."""
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-test"}]),
+            (200, {
+                "five_hour": {"utilization": 42, "resets_at": "2026-04-03T18:30:00Z"},
+                "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
+            }),
+        ]
+        result = fetch_quota("sk-ant-test")
+        self.assertIn("utilization", result["five_hour"])
+        self.assertIn("resets_at", result["five_hour"])
+        self.assertIn("utilization", result["seven_day"])
+        self.assertIn("resets_at", result["seven_day"])
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_success_timestamp_is_recent_epoch(self, mock_get):
+        """Success response timestamp is a recent epoch integer."""
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-test"}]),
+            (200, {
+                "five_hour": {"utilization": 42, "resets_at": None},
+                "seven_day": {"utilization": 15, "resets_at": None},
+            }),
+        ]
+        before = int(time.time())
+        result = fetch_quota("sk-ant-test")
+        after = int(time.time())
+        self.assertGreaterEqual(result["timestamp"], before)
+        self.assertLessEqual(result["timestamp"], after)
+
+
+# ---------------------------------------------------------------------------
+# Validate: error bridge never has org_uuid
+# ---------------------------------------------------------------------------
+
+class TestErrorBridgeNoOrgUuid(unittest.TestCase):
+    """Verify error bridges do not include org_uuid."""
+
+    def test_error_bridge_has_no_org_uuid(self):
+        """_error_bridge does not include org_uuid key."""
+        result = _error_bridge("blocked", "blocked")
+        self.assertNotIn("org_uuid", result)
+
+
+# ---------------------------------------------------------------------------
+# Validate: fetch_quota handles malformed usage response
+# ---------------------------------------------------------------------------
+
+class TestFetchQuotaMalformedUsage(unittest.TestCase):
+    """Test fetch_quota with malformed but 200 usage responses."""
+
+    def setUp(self):
+        scraper._org_uuid = None
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_missing_five_hour_key_returns_none_values(self, mock_get):
+        """Usage response missing five_hour returns None utilization."""
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-test"}]),
+            (200, {"seven_day": {"utilization": 15, "resets_at": None}}),
+        ]
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(result["five_hour"]["utilization"])
+        self.assertIsNone(result["five_hour"]["resets_at"])
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_none_usage_body_triggers_error(self, mock_get):
+        """200 with None body triggers upstream_error via exception path."""
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-test"}]),
+            (200, None),
+        ]
+        result = fetch_quota("sk-ant-test")
+        # None.get() will raise AttributeError, caught by broad except
+        self.assertEqual(result["status"], "upstream_error")
+
+
+# ---------------------------------------------------------------------------
+# Validate: read_session_key with owner+execute permissions
+# ---------------------------------------------------------------------------
+
+class TestReadSessionKeyPermVariants(unittest.TestCase):
+    """Test additional permission variants for session key files."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.key_path = os.path.join(self.tmpdir, "key.json")
+
+    def tearDown(self):
+        if os.path.exists(self.key_path):
+            os.chmod(self.key_path, 0o600)
+            os.remove(self.key_path)
+        os.rmdir(self.tmpdir)
+
+    def _write_key(self, mode):
+        with open(self.key_path, "w") as f:
+            json.dump({"sessionKey": "sk-test"}, f)
+        os.chmod(self.key_path, mode)
+
+    def test_owner_rwx_passes(self):
+        """Owner rwx (0o700) passes permission check."""
+        self._write_key(0o700)
+        result = read_session_key(self.key_path)
+        self.assertNotIn("error", result)
+
+    def test_group_execute_fails(self):
+        """Group execute (0o610) fails permission check."""
+        self._write_key(0o610)
+        result = read_session_key(self.key_path)
+        self.assertEqual(result["error"], "insecure_permissions")
+
+    def test_other_execute_fails(self):
+        """Other execute (0o601) fails permission check."""
+        self._write_key(0o601)
+        result = read_session_key(self.key_path)
+        self.assertEqual(result["error"], "insecure_permissions")
+
+
 if __name__ == "__main__":
     unittest.main()

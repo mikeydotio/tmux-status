@@ -207,5 +207,63 @@ class TestStdlibOnly(unittest.TestCase):
                     )
 
 
+# ---------------------------------------------------------------------------
+# Validate: Additional config edge cases
+# ---------------------------------------------------------------------------
+
+class TestConfigDefaults(unittest.TestCase):
+    """Verify default values match the design specification."""
+
+    def test_default_host_is_localhost(self):
+        """Default host is 127.0.0.1 (R19 — secure default)."""
+        args = parse_args([])
+        self.assertEqual(args.host, "127.0.0.1")
+
+    def test_default_port_is_7850(self):
+        """Default port is 7850 (design spec)."""
+        args = parse_args([])
+        self.assertEqual(args.port, 7850)
+
+    def test_default_interval_is_300(self):
+        """Default interval is 300 seconds (5 minutes)."""
+        args = parse_args([])
+        self.assertEqual(args.interval, 300)
+
+    def test_default_log_level_is_info(self):
+        """Default log level is INFO."""
+        args = parse_args([])
+        self.assertEqual(args.log_level, "INFO")
+
+
+class TestWarnIfExposedLocalhostVariants(unittest.TestCase):
+    """Test warn_if_exposed with localhost variants."""
+
+    def test_no_warning_on_ipv4_localhost(self):
+        """127.0.0.1 does not trigger a warning."""
+        args = parse_args(["--host", "127.0.0.1"])
+        with self.assertLogs(level="WARNING") as cm:
+            logging.getLogger("test").warning("sentinel")
+            warn_if_exposed(args)
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("sentinel", cm.output[0])
+
+    def test_warning_on_all_interfaces(self):
+        """0.0.0.0 triggers a warning when no auth configured."""
+        args = parse_args(["--host", "0.0.0.0"])
+        with self.assertLogs(level="WARNING") as cm:
+            warn_if_exposed(args)
+        warnings = [msg for msg in cm.output if "NO authentication" in msg]
+        self.assertEqual(len(warnings), 1)
+
+    def test_warning_on_private_ip(self):
+        """192.168.1.1 triggers a warning when no auth configured."""
+        args = parse_args(["--host", "192.168.1.1"])
+        with self.assertLogs(level="WARNING") as cm:
+            warn_if_exposed(args)
+        warnings = [msg for msg in cm.output if "NO authentication" in msg]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("192.168.1.1", warnings[0])
+
+
 if __name__ == "__main__":
     unittest.main()

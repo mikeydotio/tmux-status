@@ -966,5 +966,376 @@ class TestReferenceSwap(unittest.TestCase):
         self.assertIs(server._cached_data, new_data)
 
 
+# ---------------------------------------------------------------------------
+# Validate: SIGUSR1 triggers an actual out-of-cycle scrape
+# ---------------------------------------------------------------------------
+
+class TestSigusr1TriggersOutOfCycleScrape(unittest.TestCase):
+    """Verify SIGUSR1 wakes the poll loop and triggers a scrape."""
+
+    @mock.patch("tmux_status_server.scraper.read_session_key")
+    @mock.patch("tmux_status_server.scraper.fetch_quota")
+    def test_sigusr1_triggers_immediate_scrape_in_poll_loop(self, mock_fetch, mock_read_key):
+        """SIGUSR1 wakes the poll loop causing an out-of-cycle _do_scrape."""
+        server, _, _, _, _ = _make_server(interval=3600)  # long interval
+        mock_read_key.return_value = {"sessionKey": "sk-test"}
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+
+        scrape_count = [0]
+        original_do_scrape = server._do_scrape
+
+        def counting_scrape():
+            original_do_scrape()
+            scrape_count[0] += 1
+            if scrape_count[0] >= 2:
+                server._shutdown.set()
+                server._wake.set()
+
+        server._do_scrape = counting_scrape
+
+        # Simulate: poll loop starts, does first scrape, sleeps on wake.wait().
+        # We wake it via _handle_sigusr1 to trigger a second scrape.
+        def wake_after_first():
+            # Wait for first scrape to complete
+            while scrape_count[0] < 1:
+                time.sleep(0.01)
+            # Trigger SIGUSR1 wake
+            server._handle_sigusr1(signal.SIGUSR1, None)
+
+        waker = threading.Thread(target=wake_after_first)
+        waker.start()
+        server._poll_loop()
+        waker.join(timeout=5)
+        self.assertGreaterEqual(scrape_count[0], 2,
+                                "SIGUSR1 should have triggered a second scrape")
+
+
+# ---------------------------------------------------------------------------
+# Validate: State transitions in _last_scrape_ok
+# ---------------------------------------------------------------------------
+
+class TestScrapeStateTransitions(unittest.TestCase):
+    """Test _last_scrape_ok transitions between success and failure."""
+
+    @mock.patch("tmux_status_server.scraper.read_session_key")
+    @mock.patch("tmux_status_server.scraper.fetch_quota")
+    def test_success_then_failure_then_success(self, mock_fetch, mock_read_key):
+        """_last_scrape_ok correctly transitions: True -> False -> True."""
+        server, _, _, _, _ = _make_server()
+        mock_read_key.return_value = {"sessionKey": "sk-test"}
+
+        # Scrape 1: success
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        server._do_scrape()
+        self.assertTrue(server._last_scrape_ok)
+
+        # Scrape 2: error
+        mock_fetch.return_value = {
+            "status": "upstream_error", "error": "upstream_error",
+            "five_hour": {"utilization": "X", "resets_at": None},
+            "seven_day": {"utilization": "X", "resets_at": None},
+            "timestamp": 2,
+        }
+        server._do_scrape()
+        self.assertFalse(server._last_scrape_ok)
+
+        # Scrape 3: success again
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 3}
+        server._do_scrape()
+        self.assertTrue(server._last_scrape_ok)
+
+    @mock.patch("tmux_status_server.scraper.read_session_key")
+    @mock.patch("tmux_status_server.scraper.fetch_quota")
+    def test_health_reflects_scrape_transitions(self, mock_fetch, mock_read_key):
+        """Health endpoint status changes as scrape state transitions."""
+        server, routes, _, _, _ = _make_server()
+        mock_read_key.return_value = {"sessionKey": "sk-test"}
+
+        # Before any scrape: error
+        result = json.loads(routes["/health"]())
+        self.assertEqual(result["status"], "error")
+
+        # After successful scrape: ok
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        server._do_scrape()
+        result = json.loads(routes["/health"]())
+        self.assertEqual(result["status"], "ok")
+
+        # After failed scrape: degraded (has cached data but last scrape failed)
+        mock_fetch.return_value = {
+            "status": "upstream_error", "error": "upstream_error",
+            "five_hour": {"utilization": "X", "resets_at": None},
+            "seven_day": {"utilization": "X", "resets_at": None},
+            "timestamp": 2,
+        }
+        server._do_scrape()
+        result = json.loads(routes["/health"]())
+        self.assertEqual(result["status"], "degraded")
+
+
+# ---------------------------------------------------------------------------
+# Validate: Empty / whitespace-only API key file
+# ---------------------------------------------------------------------------
+
+class TestApiKeyEdgeCases(unittest.TestCase):
+    """Test edge cases in API key loading."""
+
+    def test_empty_api_key_file_returns_empty_string(self):
+        """An empty API key file returns empty string (falsy after strip)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
+            f.write("")
+            key_path = f.name
+        try:
+            server, _, _, _, _ = _make_server(api_key_file=key_path)
+            result = server._load_api_key()
+            self.assertEqual(result, "")
+        finally:
+            os.unlink(key_path)
+
+    def test_whitespace_only_api_key_file_returns_empty_string(self):
+        """A whitespace-only API key file returns empty string after strip."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
+            f.write("   \n  \n")
+            key_path = f.name
+        try:
+            server, _, _, _, _ = _make_server(api_key_file=key_path)
+            result = server._load_api_key()
+            self.assertEqual(result, "")
+        finally:
+            os.unlink(key_path)
+
+    def test_api_key_with_trailing_newlines_stripped(self):
+        """API key with trailing newlines is properly stripped."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
+            f.write("my-key-value\n\n")
+            key_path = f.name
+        try:
+            server, _, _, _, _ = _make_server(api_key_file=key_path)
+            result = server._load_api_key()
+            self.assertEqual(result, "my-key-value")
+        finally:
+            os.unlink(key_path)
+
+
+# ---------------------------------------------------------------------------
+# Validate: /quota full bridge-format contract
+# ---------------------------------------------------------------------------
+
+class TestQuotaBridgeFormatContract(unittest.TestCase):
+    """Verify the full bridge-format JSON contract for /quota responses."""
+
+    def test_success_response_includes_org_uuid(self):
+        """Successful /quota includes org_uuid from the cached data."""
+        server, routes, _, _, _ = _make_server()
+        server._cached_data = {
+            "status": "ok",
+            "org_uuid": "org-abc-123",
+            "five_hour": {"utilization": 42, "resets_at": "2026-04-03T18:30:00Z"},
+            "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
+            "timestamp": 1743696000,
+        }
+        result = json.loads(routes["/quota"]())
+        self.assertEqual(result["org_uuid"], "org-abc-123")
+
+    def test_error_response_has_all_bridge_keys(self):
+        """Error /quota responses include status, five_hour, seven_day, timestamp, error."""
+        server, routes, _, _, _ = _make_server()
+        server._cached_data = {
+            "status": "session_key_expired",
+            "error": "session_key_expired",
+            "five_hour": {"utilization": "X", "resets_at": None},
+            "seven_day": {"utilization": "X", "resets_at": None},
+            "timestamp": 1743696000,
+        }
+        result = json.loads(routes["/quota"]())
+        self.assertEqual(result["status"], "session_key_expired")
+        self.assertEqual(result["error"], "session_key_expired")
+        self.assertEqual(result["five_hour"]["utilization"], "X")
+        self.assertIsNone(result["five_hour"]["resets_at"])
+        self.assertEqual(result["seven_day"]["utilization"], "X")
+        self.assertIsNone(result["seven_day"]["resets_at"])
+        self.assertIsInstance(result["timestamp"], int)
+
+    def test_503_starting_has_x_utilization(self):
+        """503 starting response has 'X' utilization values as strings."""
+        server, routes, _, _, _ = _make_server()
+        result = json.loads(routes["/quota"]())
+        self.assertIsInstance(result["five_hour"]["utilization"], str)
+        self.assertEqual(result["five_hour"]["utilization"], "X")
+        self.assertIsInstance(result["seven_day"]["utilization"], str)
+        self.assertEqual(result["seven_day"]["utilization"], "X")
+
+    def test_success_utilization_is_integer(self):
+        """Successful response has integer utilization values."""
+        server, routes, _, _, _ = _make_server()
+        server._cached_data = {
+            "status": "ok",
+            "five_hour": {"utilization": 42, "resets_at": None},
+            "seven_day": {"utilization": 15, "resets_at": None},
+            "timestamp": 1743696000,
+        }
+        result = json.loads(routes["/quota"]())
+        self.assertIsInstance(result["five_hour"]["utilization"], int)
+        self.assertIsInstance(result["seven_day"]["utilization"], int)
+
+
+# ---------------------------------------------------------------------------
+# Validate: Poll thread is daemon thread
+# ---------------------------------------------------------------------------
+
+class TestPollThreadDaemon(unittest.TestCase):
+    """Verify the poll thread is a daemon thread so it doesn't block exit."""
+
+    def test_poll_thread_is_daemon_in_source(self):
+        """The threading.Thread for poll loop is created with daemon=True."""
+        with open(SERVER_PATH) as f:
+            source = f.read()
+        # Check that daemon=True appears near the Thread creation for quota-poll
+        self.assertIn("daemon=True", source)
+        self.assertIn('name="quota-poll"', source)
+
+
+# ---------------------------------------------------------------------------
+# Validate: Error handler response format consistency
+# ---------------------------------------------------------------------------
+
+class TestErrorHandlerResponseFormat(unittest.TestCase):
+    """Test that error handler responses are valid JSON with expected structure."""
+
+    def test_404_is_valid_json_with_error_key(self):
+        """404 handler returns valid JSON dict with only 'error' key."""
+        server, _, _, errors, _ = _make_server()
+        result_json = errors[404](mock.MagicMock())
+        result = json.loads(result_json)
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "not_found")
+
+    def test_500_is_valid_json_with_error_key(self):
+        """500 handler returns valid JSON dict with only 'error' key."""
+        server, _, _, errors, _ = _make_server()
+        result_json = errors[500](mock.MagicMock())
+        result = json.loads(result_json)
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "internal_error")
+
+    def test_500_error_no_exception_details(self):
+        """500 handler never leaks exception details."""
+        server, _, _, errors, _ = _make_server()
+        err_mock = mock.MagicMock()
+        err_mock.body = "Internal Server Error: database connection failed"
+        err_mock.traceback = "Traceback (most recent call last):\n..."
+        result_json = errors[500](err_mock)
+        self.assertNotIn("database", result_json)
+        self.assertNotIn("Traceback", result_json)
+        self.assertNotIn("connection", result_json)
+
+
+# ---------------------------------------------------------------------------
+# Validate: Server startup time tracking
+# ---------------------------------------------------------------------------
+
+class TestStartTimeTracking(unittest.TestCase):
+    """Test that _start_time is set and used correctly."""
+
+    def test_init_sets_start_time(self):
+        """Constructor sets _start_time to a recent timestamp."""
+        before = time.time()
+        server, _, _, _, _ = _make_server()
+        after = time.time()
+        self.assertGreaterEqual(server._start_time, before)
+        self.assertLessEqual(server._start_time, after)
+
+    def test_run_resets_start_time(self):
+        """run() resets _start_time for accurate uptime calculation."""
+        server, _, _, _, mb = _make_server()
+        original_start = server._start_time
+        time.sleep(0.05)
+        with mock.patch("signal.signal"), \
+             mock.patch.object(server, "_poll_loop"):
+            server.run()
+        self.assertGreater(server._start_time, original_start)
+
+
+# ---------------------------------------------------------------------------
+# Validate: Scraper _error_bridge with all known error codes
+# ---------------------------------------------------------------------------
+
+class TestErrorBridgeAllCodes(unittest.TestCase):
+    """Verify _error_bridge works with all documented error codes."""
+
+    def test_all_known_error_codes_produce_valid_bridge(self):
+        """Each documented error code produces a well-formed bridge dict."""
+        from tmux_status_server.scraper import _error_bridge
+
+        error_codes = [
+            "session_key_expired",
+            "blocked",
+            "rate_limited",
+            "upstream_error",
+            "no_key",
+            "insecure_permissions",
+            "invalid_json",
+        ]
+        for code in error_codes:
+            result = _error_bridge(code, code)
+            self.assertEqual(result["status"], code, f"Failed for {code}")
+            self.assertEqual(result["error"], code, f"Failed for {code}")
+            self.assertEqual(result["five_hour"]["utilization"], "X", f"Failed for {code}")
+            self.assertIsNone(result["five_hour"]["resets_at"], f"Failed for {code}")
+            self.assertEqual(result["seven_day"]["utilization"], "X", f"Failed for {code}")
+            self.assertIsNone(result["seven_day"]["resets_at"], f"Failed for {code}")
+            self.assertIsInstance(result["timestamp"], int, f"Failed for {code}")
+
+
+# ---------------------------------------------------------------------------
+# Validate: Session key re-read on each cycle (key rotation support)
+# ---------------------------------------------------------------------------
+
+class TestKeyRotationSupport(unittest.TestCase):
+    """Verify that session key is re-read on each scrape, supporting rotation."""
+
+    @mock.patch("tmux_status_server.scraper.read_session_key")
+    @mock.patch("tmux_status_server.scraper.fetch_quota")
+    def test_different_keys_used_across_scrapes(self, mock_fetch, mock_read_key):
+        """Different session keys are passed to fetch_quota across scrapes."""
+        server, _, _, _, _ = _make_server()
+        mock_read_key.side_effect = [
+            {"sessionKey": "sk-first-key"},
+            {"sessionKey": "sk-rotated-key"},
+        ]
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+
+        server._do_scrape()
+        server._do_scrape()
+
+        # Verify fetch_quota was called with different keys
+        calls = mock_fetch.call_args_list
+        self.assertEqual(calls[0][0][0], "sk-first-key")
+        self.assertEqual(calls[1][0][0], "sk-rotated-key")
+
+    @mock.patch("tmux_status_server.scraper.read_session_key")
+    @mock.patch("tmux_status_server.scraper.fetch_quota")
+    def test_key_error_mid_rotation_recovers(self, mock_fetch, mock_read_key):
+        """If key file temporarily missing during rotation, next cycle recovers."""
+        server, _, _, _, _ = _make_server()
+        mock_read_key.side_effect = [
+            {"sessionKey": "sk-good"},
+            {"error": "no_key"},  # key file missing during rotation
+            {"sessionKey": "sk-new"},
+        ]
+        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+
+        server._do_scrape()
+        self.assertTrue(server._last_scrape_ok)
+
+        server._do_scrape()
+        self.assertFalse(server._last_scrape_ok)  # failed
+
+        server._do_scrape()
+        self.assertTrue(server._last_scrape_ok)  # recovered
+
+
 if __name__ == "__main__":
     unittest.main()
