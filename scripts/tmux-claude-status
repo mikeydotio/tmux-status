@@ -44,7 +44,7 @@ TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
 
 # ── Parse model, context usage, and effort from transcript ─────
 eval "$(python3 << PYEOF
-import re, json, shlex, os, time, glob
+import re, json, shlex, os, time, glob, urllib.request
 
 transcript = "$TRANSCRIPT"
 model = ""
@@ -108,11 +108,14 @@ if conversation_id:
         except:
             continue
 
-# Read quota bridge path from settings.conf (QUOTA_DATA_PATH), default to cache dir
+# Read settings from settings.conf
 _home = os.path.expanduser("~")
 _config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(_home, ".config"))
 _settings_file = os.path.join(_config_dir, "tmux-status", "settings.conf")
 quota_bridge = os.path.join(_home, ".cache", "tmux-status", "claude-quota.json")
+quota_source = ""
+quota_api_key = ""
+quota_cache_ttl = 30
 try:
     with open(_settings_file) as _sf:
         for _line in _sf:
@@ -120,14 +123,53 @@ try:
             if _line.startswith("#") or "=" not in _line:
                 continue
             _k, _v = _line.split("=", 1)
-            if _k.strip() == "QUOTA_DATA_PATH":
-                _v = _v.strip().strip("'\"")
+            _k = _k.strip()
+            _v = _v.strip().strip("'\"")
+            if _k == "QUOTA_DATA_PATH":
                 _v = os.path.expanduser(_v)
                 if _v:
                     quota_bridge = _v
-                break
+            elif _k == "QUOTA_SOURCE":
+                quota_source = _v
+            elif _k == "QUOTA_API_KEY":
+                quota_api_key = _v
+            elif _k == "QUOTA_CACHE_TTL":
+                try:
+                    quota_cache_ttl = int(_v)
+                except ValueError:
+                    pass
 except Exception:
     pass
+
+# Fetch quota from server if QUOTA_SOURCE is configured
+def _maybe_fetch_quota(source_url, api_key, cache_ttl, cache_path):
+    """Fetch quota from server, write to disk cache. Silent on failure."""
+    if not source_url:
+        return
+    if cache_ttl > 0:
+        try:
+            if time.time() - os.stat(cache_path).st_mtime < cache_ttl:
+                return  # cache is fresh
+        except FileNotFoundError:
+            pass
+    try:
+        req = urllib.request.Request(source_url.rstrip('/') + '/quota')
+        if api_key:
+            req.add_header('X-API-Key', api_key)
+        resp = urllib.request.urlopen(req, timeout=3)
+        data = resp.read()
+        json.loads(data)  # validate JSON
+        cache_dir = os.path.dirname(cache_path)
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        tmp = cache_path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, cache_path)
+    except Exception:
+        pass  # silent failure, use stale cache
+
+_maybe_fetch_quota(quota_source, quota_api_key, quota_cache_ttl, quota_bridge)
 if not os.path.exists(quota_bridge):
     quota_bridge = None
 quota_status = "none"
@@ -143,10 +185,19 @@ if quota_bridge:
         key_expires_at = qd.get("expires_at", "")
         if quota_status == "ok":
             fh = qd.get("five_hour", {})
-            five_hour_pct = round(fh.get("utilization", 0))
+            fh_util = fh.get("utilization", 0)
+            five_hour_pct = "X" if fh_util == "X" else round(fh_util)
             five_hour_reset = fh.get("resets_at", "")
             sd = qd.get("seven_day", {})
-            seven_day_pct = round(sd.get("utilization", 0))
+            sd_util = sd.get("utilization", 0)
+            seven_day_pct = "X" if sd_util == "X" else round(sd_util)
+            seven_day_reset = sd.get("resets_at", "")
+        elif quota_status == "error":
+            five_hour_pct = "X"
+            seven_day_pct = "X"
+            fh = qd.get("five_hour", {})
+            five_hour_reset = fh.get("resets_at", "")
+            sd = qd.get("seven_day", {})
             seven_day_reset = sd.get("resets_at", "")
     except:
         pass
@@ -182,9 +233,9 @@ print("MODEL=" + shlex.quote(model))
 print("USED_PCT=" + str(used_pct))
 print("EFFORT=" + shlex.quote(effort))
 print("QUOTA_STATUS=" + shlex.quote(quota_status))
-print("QUOTA_5H_PCT=" + str(five_hour_pct))
+print("QUOTA_5H_PCT=" + shlex.quote(str(five_hour_pct)))
 print("QUOTA_5H_REMAIN=" + shlex.quote(fmt_reset(five_hour_reset)))
-print("QUOTA_7D_PCT=" + str(seven_day_pct))
+print("QUOTA_7D_PCT=" + shlex.quote(str(seven_day_pct)))
 print("QUOTA_7D_REMAIN=" + shlex.quote(fmt_reset(seven_day_reset)))
 print("KEY_EXPIRY_WARN=" + ("1" if key_expiry_warn else "0"))
 PYEOF
@@ -213,6 +264,11 @@ bar_char() {
     local pct="$1"
     local chars=("_" "▂" "▃" "▄" "▅" "▆" "▇" "█")
     local colors=(34 70 106 142 178 214 208 196)
+    # Non-numeric input (e.g. "X"): return error indicator
+    if ! [ "$pct" -eq "$pct" ] 2>/dev/null; then
+        echo "#[fg=colour196]✕"
+        return
+    fi
     local idx=0
     if   [ "$pct" -le 0 ]  2>/dev/null; then idx=0
     elif [ "$pct" -le 12 ] 2>/dev/null; then idx=0
@@ -254,6 +310,17 @@ if [ "$QUOTA_COLOR" = "colour196" ]; then
 fi
 
 # ── Output ─────────────────────────────────────────────────────
+# Format quota pct display: "X" stays as "X", numeric gets "%"
+fmt_quota_pct() {
+    if [ "$1" = "X" ]; then
+        echo "X"
+    else
+        echo "${1}%"
+    fi
+}
+QUOTA_5H_DISPLAY=$(fmt_quota_pct "$QUOTA_5H_PCT")
+QUOTA_7D_DISPLAY=$(fmt_quota_pct "$QUOTA_7D_PCT")
+
 # Build output — omit quota sections if no key configured
 if [ "$QUOTA_STATUS" = "no_key" ] || [ "$QUOTA_STATUS" = "none" ]; then
     printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%%" \
@@ -261,10 +328,10 @@ if [ "$QUOTA_STATUS" = "no_key" ] || [ "$QUOTA_STATUS" = "none" ]; then
         "$EFFORT" \
         "$CTX_BAR" "$USED_PCT"
 else
-    printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%% #[fg=colour8]│ #[fg=${C_5H}]%s: %s #[fg=${C_5H}]%s%% #[fg=colour8]│ #[fg=${C_7D}]%s: %s #[fg=${C_7D}]%s%%" \
+    printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%% #[fg=colour8]│ #[fg=${C_5H}]%s: %s #[fg=${C_5H}]%s #[fg=colour8]│ #[fg=${C_7D}]%s: %s #[fg=${C_7D}]%s" \
         "$short_model" \
         "$EFFORT" \
         "$CTX_BAR" "$USED_PCT" \
-        "$QUOTA_5H_REMAIN" "$QUOTA_5H_BAR" "$QUOTA_5H_PCT" \
-        "$QUOTA_7D_REMAIN" "$QUOTA_7D_BAR" "$QUOTA_7D_PCT"
+        "$QUOTA_5H_REMAIN" "$QUOTA_5H_BAR" "$QUOTA_5H_DISPLAY" \
+        "$QUOTA_7D_REMAIN" "$QUOTA_7D_BAR" "$QUOTA_7D_DISPLAY"
 fi
