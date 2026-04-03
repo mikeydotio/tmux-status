@@ -1,31 +1,31 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-004
-- **Duration**: ~3 minutes
+- **Session**: session-execute-005
+- **Duration**: ~2 minutes
 - **Stories completed**: 1
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Fourth execution session. Crash recovery: fixed TS-3 stuck in "verifying" state (was already committed, reset to done). Implemented TS-5 (server packaging and entry points) — passed on first attempt. Full autonomy mode (canary complete since session 3).
+Fifth execution session. Implemented TS-6 (deployment files — systemd, launchd, Dockerfile) — passed on first attempt. Wave 1 is now complete (TS-2 through TS-6). Wave 2 (TS-7, TS-8) is now unblocked.
 
 ## Stories Completed This Session
-- TS-5: Server packaging and entry points — created `__init__.py` with `__version__ = "0.1.0"`, `__main__.py` with placeholder main() that calls parse_args/warn_if_exposed, and `pyproject.toml` with bottle>=0.12.25 + curl_cffi>=0.5 deps and console script entry point.
+- TS-6: Deployment files — created `server/deploy/tmux-status-server.service` (systemd user unit), `server/deploy/io.mikey.tmux-status-server.plist` (launchd plist), and `server/Dockerfile` (python:3.12-slim based). 34 new tests.
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
 - TS-3: Done (session 2) — scraper module
 - TS-4: Done (session 3) — settings and gitignore
 - TS-5: Done (session 4) — server packaging and entry points
-- TS-6: Todo — deployment files (systemd, launchd, Dockerfile)
-- TS-7: Todo (blocked by TS-5,6) — server HTTP module
-- TS-8: Todo (blocked by TS-5,6) — client-side HTTP fetch
+- TS-6: Done (session 5) — deployment files (systemd, launchd, Dockerfile)
+- TS-7: Todo (was blocked by TS-5,6 — NOW UNBLOCKED) — server HTTP module
+- TS-8: Todo (was blocked by TS-5,6 — NOW UNBLOCKED) — client-side HTTP fetch
 - TS-9: Todo (blocked by TS-7,8) — install script modifications
 - TS-10: Todo (blocked by TS-7,8) — uninstall script modifications
 
 ## Current Blockers
-None. TS-6 is next (last wave 1 story). Once TS-6 completes, TS-7 and TS-8 become unblocked.
+None. TS-7 and TS-8 are now unblocked (wave 2). TS-7 is the most critical remaining story (server HTTP module).
 
 ## Working Context
 
@@ -44,6 +44,7 @@ None. TS-6 is next (last wave 1 story). Once TS-6 completes, TS-7 and TS-8 becom
 - `__init__.py` exports `__version__` only — no re-exports of submodules
 - `__main__.py` defines `main()` locally with `if __name__ == "__main__"` guard
 - `pyproject.toml` uses setuptools build backend with `[project.scripts]` for console entry point
+- Deployment files: systemd unit uses `%h` for home dir expansion, launchd plist uses `~` in ProgramArguments
 
 ### Micro-Decisions
 - `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
@@ -56,6 +57,8 @@ None. TS-6 is next (last wave 1 story). Once TS-6 completes, TS-7 and TS-8 becom
 - `__main__.py` placeholder main() calls `sys.exit(1)` to signal server not yet implemented
 - `pyproject.toml` build-backend uses `setuptools.backends._legacy:_Backend`
 - `logging.basicConfig(level=getattr(logging, args.log_level))` used in __main__.py for log level setup
+- Dockerfile uses `--no-cache-dir` with pip install for smaller image
+- Dockerfile COPY order: pyproject.toml first, then package dir (cache-friendly layering)
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
@@ -63,18 +66,22 @@ None. TS-6 is next (last wave 1 story). Once TS-6 completes, TS-7 and TS-8 becom
 - `server/tmux_status_server/__init__.py` — Package init with __version__ = "0.1.0" (TS-5)
 - `server/tmux_status_server/__main__.py` — Entry point with placeholder main() (TS-5)
 - `server/pyproject.toml` — Package metadata, deps, console script entry point (TS-5)
+- `server/deploy/tmux-status-server.service` — Systemd user unit for Linux (TS-6)
+- `server/deploy/io.mikey.tmux-status-server.plist` — launchd plist for macOS (TS-6)
+- `server/Dockerfile` — Docker container image (TS-6)
 - `server/tests/test_config.py` — 22 tests for config module
 - `server/tests/test_scraper.py` — 36 tests for scraper module
 - `server/tests/test_package.py` — 21 tests for package structure and entry points
+- `server/tests/test_deploy.py` — 34 tests for deployment files
 - `config/settings.example.conf` — User-facing settings with new server keys and deprecated old keys (TS-4)
 - `.gitignore` — Security exclusions and Python artifacts (TS-4)
 
 ### Test State
-- 79 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
+- 113 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
 - pytest installed in `/home/mikey/.venv` (created via `uv venv`)
 - No flaky tests
 
 ## What's Next
-- TS-6 (deployment files — systemd, launchd, Dockerfile) is the last wave 1 story
-- After TS-6: TS-7 (server HTTP) and TS-8 (client fetch) become unblocked (wave 2)
+- TS-7 (server HTTP module — QuotaServer class, /quota and /health endpoints, API key auth, background poll thread, signal handling) is the most critical next story
+- TS-8 (client-side HTTP fetch in renderer) can run in parallel with TS-7 but storyhook will sequence them
 - After wave 2: TS-9 (install) and TS-10 (uninstall) become unblocked (wave 3)
