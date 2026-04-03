@@ -1,31 +1,31 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-003
-- **Duration**: ~5 minutes
+- **Session**: session-execute-004
+- **Duration**: ~3 minutes
 - **Stories completed**: 1
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Third execution session. Implemented TS-4 (settings and gitignore updates) — passed on first attempt. Final canary review approved by user (canary 3/3). Transitioning to full autonomy for remaining stories.
+Fourth execution session. Crash recovery: fixed TS-3 stuck in "verifying" state (was already committed, reset to done). Implemented TS-5 (server packaging and entry points) — passed on first attempt. Full autonomy mode (canary complete since session 3).
 
 ## Stories Completed This Session
-- TS-4: Settings and gitignore updates — added QUOTA_SOURCE=http://127.0.0.1:7850, # QUOTA_API_KEY=, QUOTA_CACHE_TTL=0 to `config/settings.example.conf`. Added DEPRECATED comments on QUOTA_REFRESH_PERIOD and QUOTA_DATA_PATH. Created `.gitignore` with security exclusions (claude-usage-key.json, *.key, *.pem, .env) and Python artifacts (__pycache__/, *.pyc, *.egg-info/).
+- TS-5: Server packaging and entry points — created `__init__.py` with `__version__ = "0.1.0"`, `__main__.py` with placeholder main() that calls parse_args/warn_if_exposed, and `pyproject.toml` with bottle>=0.12.25 + curl_cffi>=0.5 deps and console script entry point.
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
 - TS-3: Done (session 2) — scraper module
 - TS-4: Done (session 3) — settings and gitignore
-- TS-5: Todo — server packaging and entry points
-- TS-6: Todo — deployment files
+- TS-5: Done (session 4) — server packaging and entry points
+- TS-6: Todo — deployment files (systemd, launchd, Dockerfile)
 - TS-7: Todo (blocked by TS-5,6) — server HTTP module
 - TS-8: Todo (blocked by TS-5,6) — client-side HTTP fetch
 - TS-9: Todo (blocked by TS-7,8) — install script modifications
 - TS-10: Todo (blocked by TS-7,8) — uninstall script modifications
 
 ## Current Blockers
-None.
+None. TS-6 is next (last wave 1 story). Once TS-6 completes, TS-7 and TS-8 become unblocked.
 
 ## Working Context
 
@@ -41,6 +41,9 @@ None.
 - Test files use unittest-style classes under pytest
 - AST-based import verification test pattern used in both modules
 - Settings.conf uses `KEY=value` with `#` for comments and `# KEY=` for optional/commented-out keys
+- `__init__.py` exports `__version__` only — no re-exports of submodules
+- `__main__.py` defines `main()` locally with `if __name__ == "__main__"` guard
+- `pyproject.toml` uses setuptools build backend with `[project.scripts]` for console entry point
 
 ### Micro-Decisions
 - `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
@@ -50,22 +53,28 @@ None.
 - Logger uses `logging.getLogger(__name__)` in both modules
 - Deprecated settings get `# DEPRECATED: <reason>` comment prefix, kept in a "Deprecated settings" section
 - .gitignore separates "Secrets and credentials" from "Python" sections with blank line
+- `__main__.py` placeholder main() calls `sys.exit(1)` to signal server not yet implemented
+- `pyproject.toml` build-backend uses `setuptools.backends._legacy:_Backend`
+- `logging.basicConfig(level=getattr(logging, args.log_level))` used in __main__.py for log level setup
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
 - `server/tmux_status_server/scraper.py` — Session key reading and quota fetching (TS-3)
+- `server/tmux_status_server/__init__.py` — Package init with __version__ = "0.1.0" (TS-5)
+- `server/tmux_status_server/__main__.py` — Entry point with placeholder main() (TS-5)
+- `server/pyproject.toml` — Package metadata, deps, console script entry point (TS-5)
 - `server/tests/test_config.py` — 22 tests for config module
 - `server/tests/test_scraper.py` — 36 tests for scraper module
+- `server/tests/test_package.py` — 21 tests for package structure and entry points
 - `config/settings.example.conf` — User-facing settings with new server keys and deprecated old keys (TS-4)
 - `.gitignore` — Security exclusions and Python artifacts (TS-4)
 
 ### Test State
-- 58 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
+- 79 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
 - pytest installed in `/home/mikey/.venv` (created via `uv venv`)
 - No flaky tests
 
 ## What's Next
-- Canary mode complete — full autonomy from here
-- Remaining wave 1 stories: TS-5 (packaging), TS-6 (deployment)
-- After wave 1: TS-7 (server HTTP) and TS-8 (client fetch) become unblocked
-- After wave 2: TS-9 (install) and TS-10 (uninstall) become unblocked
+- TS-6 (deployment files — systemd, launchd, Dockerfile) is the last wave 1 story
+- After TS-6: TS-7 (server HTTP) and TS-8 (client fetch) become unblocked (wave 2)
+- After wave 2: TS-9 (install) and TS-10 (uninstall) become unblocked (wave 3)
