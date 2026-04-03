@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tmux-status-server"
+version = "0.1.0"
+description = "Scrape claude.ai for quota data and serve via HTTP REST API"
+requires-python = ">=3.10"
+dependencies = [
+    "bottle>=0.12.25",
+    "curl_cffi>=0.5",
+]
+
+[project.scripts]
+tmux-status-server = "tmux_status_server.__main__:main"
