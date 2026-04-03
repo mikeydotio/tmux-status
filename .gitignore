@@ -1,0 +1,10 @@
+# Secrets and credentials
+claude-usage-key.json
+*.key
+*.pem
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
