@@ -1,0 +1,11 @@
+{
+  "status": "paused",
+  "sessions_completed": 3,
+  "stories_attempted": 3,
+  "total_retries": 0,
+  "retry_counts": {},
+  "canary_remaining": 0,
+  "storyhook_consecutive_failures": 0,
+  "started_at": "2026-04-03T19:10:00Z",
+  "updated_at": "2026-04-03T16:30:00Z"
+}

@@ -1,26 +1,26 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-002
+- **Session**: session-execute-003
 - **Duration**: ~5 minutes
 - **Stories completed**: 1
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Second execution session. Implemented TS-3 (server scraper module) — passed on first attempt with all 58 tests green (22 config + 36 scraper). Canary review approved by user (canary 2/3).
+Third execution session. Implemented TS-4 (settings and gitignore updates) — passed on first attempt. Final canary review approved by user (canary 3/3). Transitioning to full autonomy for remaining stories.
 
 ## Stories Completed This Session
-- TS-3: Server scraper module — `server/tmux_status_server/scraper.py` with `read_session_key(path)` (permission enforcement, error dicts) and `fetch_quota(session_key)` (curl_cffi/chrome131, org UUID caching, sanitized error codes). 36 tests.
+- TS-4: Settings and gitignore updates — added QUOTA_SOURCE=http://127.0.0.1:7850, # QUOTA_API_KEY=, QUOTA_CACHE_TTL=0 to `config/settings.example.conf`. Added DEPRECATED comments on QUOTA_REFRESH_PERIOD and QUOTA_DATA_PATH. Created `.gitignore` with security exclusions (claude-usage-key.json, *.key, *.pem, .env) and Python artifacts (__pycache__/, *.pyc, *.egg-info/).
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
 - TS-3: Done (session 2) — scraper module
-- TS-4: Todo — settings and gitignore updates
+- TS-4: Done (session 3) — settings and gitignore
 - TS-5: Todo — server packaging and entry points
 - TS-6: Todo — deployment files
-- TS-7: Todo (blocked by TS-2,3,4,5,6) — server HTTP module
-- TS-8: Todo (blocked by TS-2,3,4,5,6) — client-side HTTP fetch
+- TS-7: Todo (blocked by TS-5,6) — server HTTP module
+- TS-8: Todo (blocked by TS-5,6) — client-side HTTP fetch
 - TS-9: Todo (blocked by TS-7,8) — install script modifications
 - TS-10: Todo (blocked by TS-7,8) — uninstall script modifications
 
@@ -40,28 +40,32 @@ None.
 - Tests use `sys.path.insert` to import from `server/tmux_status_server/`
 - Test files use unittest-style classes under pytest
 - AST-based import verification test pattern used in both modules
+- Settings.conf uses `KEY=value` with `#` for comments and `# KEY=` for optional/commented-out keys
 
 ### Micro-Decisions
-- `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions — distinguishes permission issues from missing files
+- `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
 - `fetch_quota` uses `status_map` dict for HTTP→error code mapping: {401: "session_key_expired", 403: "blocked", 429: "rate_limited"}
 - `_http_get` lazy-imports `curl_cffi` to allow tests to mock without needing the actual package
-- `stat` module imported but unused (permission check uses literal `0o077`) — harmless, noted by evaluator
-- `extract_window()` defined as nested function inside `fetch_quota` — matches existing script pattern
+- `extract_window()` defined as nested function inside `fetch_quota`
 - Logger uses `logging.getLogger(__name__)` in both modules
+- Deprecated settings get `# DEPRECATED: <reason>` comment prefix, kept in a "Deprecated settings" section
+- .gitignore separates "Secrets and credentials" from "Python" sections with blank line
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
 - `server/tmux_status_server/scraper.py` — Session key reading and quota fetching (TS-3)
 - `server/tests/test_config.py` — 22 tests for config module
 - `server/tests/test_scraper.py` — 36 tests for scraper module
+- `config/settings.example.conf` — User-facing settings with new server keys and deprecated old keys (TS-4)
+- `.gitignore` — Security exclusions and Python artifacts (TS-4)
 
 ### Test State
 - 58 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
 - pytest installed in `/home/mikey/.venv` (created via `uv venv`)
 - No flaky tests
-- No project-level test suite exists yet
 
 ## What's Next
-- Remaining wave 1 stories: TS-4 (settings+gitignore), TS-5 (packaging), TS-6 (deployment)
-- Canary reviews remaining: 1
-- After all wave 1 stories: TS-7 (server HTTP) and TS-8 (client fetch) become unblocked
+- Canary mode complete — full autonomy from here
+- Remaining wave 1 stories: TS-5 (packaging), TS-6 (deployment)
+- After wave 1: TS-7 (server HTTP) and TS-8 (client fetch) become unblocked
+- After wave 2: TS-9 (install) and TS-10 (uninstall) become unblocked
