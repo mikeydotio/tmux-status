@@ -1,19 +1,16 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-008
-- **Duration**: ~5 minutes
-- **Stories completed**: 1
+- **Session**: session-execute-009
+- **Stories completed**: 1 (TS-9)
 - **Stories attempted**: 1
-- **Status**: Session limit reached (1/1 stories per session)
+- **Status**: ALL STORIES COMPLETE — transitioning to review+validate
 
 ## What Happened
-Eighth execution session. Implemented TS-10 (uninstall script daemon teardown — OS detection, systemd/launchd removal, pip3 uninstall) — passed evaluation on first attempt. Wave 3 partially complete (TS-10 done, TS-9 remaining).
-
-Also fixed storyhook state inconsistencies: TS-3 and TS-5 were stuck in `verifying`/`todo` due to `git checkout .` reverting `.storyhook/` tracked files. Both were set back to `done`.
+Ninth and final execution session. Implemented TS-9 (install script modifications — server pip install, OS-detected daemon setup, legacy quota-poll migration). Passed evaluation on first attempt. All 9 implementation stories complete across 9 sessions with 0 retries.
 
 ## Stories Completed This Session
-- TS-10: Uninstall script modifications — added daemon teardown section before symlink removal: OS detection via `uname -s`, Linux systemd stop/disable/remove with daemon-reload, macOS launchctl unload/remove, pip3 uninstall with silent failure on all commands.
+- TS-9: Install script modifications — replaced old "Check optional quota dependencies" section with three new sections: (1) server pip install with pip3/pip fallback, (2) kill old tmux-status-quota-poll processes with migration message, (3) OS-detected daemon setup via systemd on Linux or launchd on macOS. Updated final output to mention server URL and platform-specific status check commands.
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
@@ -24,10 +21,10 @@ Also fixed storyhook state inconsistencies: TS-3 and TS-5 were stuck in `verifyi
 - TS-7: Done (session 6) — server HTTP module (QuotaServer, endpoints, auth, polling)
 - TS-8: Done (session 7) — client-side HTTP fetch in renderer
 - TS-10: Done (session 8) — uninstall script daemon teardown
-- TS-9: Todo (NOW UNBLOCKED) — install script modifications
+- TS-9: Done (session 9) — install script modifications
 
 ## Current Blockers
-None. TS-9 is the only remaining story (wave 3, final story).
+None. All stories complete.
 
 ## Working Context
 
@@ -54,21 +51,12 @@ None. TS-9 is the only remaining story (wave 3, final story).
 - Renderer Python block parses settings.conf in a single loop for ALL settings
 - `_maybe_fetch_quota()` defined as function in embedded Python, called inline
 - Fetch timeout is 3 seconds (hardcoded — renderer runs every 5s)
-- Non-numeric bar_char input returns red ✕ character
+- Non-numeric bar_char input returns red X character
 - Shell scripts use `2>/dev/null || true` for silent failure on optional commands
 - Daemon teardown section placed BEFORE symlink removal in both install/uninstall
 - OS detection uses `uname -s` checking for "Linux" and "Darwin"
-
-### Micro-Decisions
-- `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
-- `fetch_quota` uses `status_map` dict for HTTP→error code mapping
-- Deprecated settings get `# DEPRECATED: <reason>` comment prefix
-- `quota_cache_ttl` Python default is 30 (fallback when no settings.conf); installed settings.conf has 0
-- Only literal "error" status triggers "X" output
-- shlex.quote() used for quota pct output to safely handle "X" string values in eval
-- systemd `daemon-reload` runs after removing unit file (not before)
-- pip3 uninstall uses `-y` flag (no confirmation prompt)
-- Uninstall outputs "Server package uninstall complete" even if pip3 fails (silent failure)
+- pip3 used with fallback to pip; pip3 uninstall uses `-y` flag
+- Install script exits on pip failure (critical dependency)
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
@@ -83,7 +71,7 @@ None. TS-9 is the only remaining story (wave 3, final story).
 - `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing, "X" handling (TS-8)
 - `config/settings.example.conf` — User-facing settings with server keys (TS-4)
 - `.gitignore` — Security exclusions and Python artifacts (TS-4)
-- `install.sh` — Installer (to be modified by TS-9)
+- `install.sh` — Installer with server pip install, daemon setup, quota-poll migration (TS-9)
 - `uninstall.sh` — Uninstaller with daemon teardown and server uninstall (TS-10)
 
 ### Test State
@@ -93,6 +81,4 @@ None. TS-9 is the only remaining story (wave 3, final story).
 - Test files: test_config.py (22), test_scraper.py (36), test_package.py (21), test_server.py (75), test_deploy.py (34)
 
 ## What's Next
-- TS-9 (install script modifications) is the ONLY remaining story — wave 3, final story
-- Modifies install.sh for server pip install, OS detection, systemd/launchd daemon setup
-- After TS-9 is done, all stories are complete → transition to review+validate
+- All stories complete → transition to review+validate
