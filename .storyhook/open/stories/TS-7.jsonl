@@ -1,0 +1,11 @@
+{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T2.1: Server HTTP module — Create `server/tmux_status_server/server.py` with QuotaServer class, Bottle app, /quota and /health endpoints, API key auth via hmac.compare_digest, background poll thread, signal handling (SIGTERM/SIGINT/SIGUSR1), immediate first scrape, session key re-read per cycle. Update __main__.py.","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"critical"}
+{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["http","phase:2","server"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-2","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-3","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-4","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-5","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-6","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-9","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-10","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}

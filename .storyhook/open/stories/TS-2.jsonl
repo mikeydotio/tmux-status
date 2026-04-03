@@ -1,0 +1,6 @@
+{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T1.1: Server config module — Create `server/tmux_status_server/config.py` with argparse-based CLI configuration (--host, --port, --key-file, --api-key-file, --interval, --log-level). Default bind 127.0.0.1:7850. Non-localhost-without-auth warning.","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["config","phase:1","server"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-7","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-8","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}

@@ -1,0 +1,6 @@
+{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T3.2: Uninstall script modifications — Modify `uninstall.sh` for daemon teardown (systemd/launchd), server package uninstall, OS detection.","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["deploy","phase:3","uninstall"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-7","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-8","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}

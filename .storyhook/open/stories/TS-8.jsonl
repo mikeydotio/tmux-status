@@ -1,0 +1,11 @@
+{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T2.2: Client-side HTTP fetch in renderer — Modify `scripts/tmux-claude-status` to fetch quota from server via urllib.request, write to disk cache with atomic writes, respect QUOTA_CACHE_TTL, handle \"X\" error display, preserve QUOTA_DATA_PATH backward compat.","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["client","phase:2","renderer"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-2","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-3","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-4","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-5","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-6","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-9","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-10","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}

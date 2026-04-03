@@ -8,5 +8,15 @@ super = "OPEN"
 role = "active"
 
 [[states]]
+slug = "verifying"
+super = "OPEN"
+description = "Evaluator reviewing this story"
+
+[[states]]
+slug = "blocked"
+super = "OPEN"
+description = "Dependency unmet, decision needed, or max retries exhausted"
+
+[[states]]
 slug = "done"
 super = "CLOSED"

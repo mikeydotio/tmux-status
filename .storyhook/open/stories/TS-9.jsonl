@@ -1,0 +1,6 @@
+{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T3.1: Install script modifications — Modify `install.sh` for server pip install, OS detection, systemd/launchd daemon setup, kill old quota-poll processes, start daemon before tmux reload.","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["deploy","install","phase:3"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-7","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-8","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}
