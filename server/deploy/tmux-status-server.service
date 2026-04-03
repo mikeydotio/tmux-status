@@ -1,0 +1,11 @@
+[Unit]
+Description=tmux-status quota server
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/tmux-status-server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
