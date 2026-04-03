@@ -1,17 +1,17 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-006
-- **Duration**: ~16 minutes
+- **Session**: session-execute-007
+- **Duration**: ~7 minutes
 - **Stories completed**: 1
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Sixth execution session. Implemented TS-7 (server HTTP module — QuotaServer class, Bottle endpoints, API key auth, background poll thread, signal handling) — passed evaluation on first attempt. Wave 2 is partially complete (TS-7 done, TS-8 remaining). Also fixed stale story states: TS-3 (verifying→done) and TS-5 (todo→done) were inconsistent with prior handoff.
+Seventh execution session. Implemented TS-8 (client-side HTTP fetch in renderer — urllib.request-based quota fetch with cache TTL, atomic writes, X error handling) — passed evaluation on first attempt. Wave 2 is now complete (TS-7 + TS-8). Wave 3 (TS-9, TS-10) is now unblocked.
 
 ## Stories Completed This Session
-- TS-7: Server HTTP module — created `server/tmux_status_server/server.py` with QuotaServer class, /quota and /health endpoints, X-API-Key auth via hmac.compare_digest, background poll thread with immediate first scrape and per-cycle session key re-read, SIGTERM/SIGINT/SIGUSR1 signal handling, reference swap for thread safety. Updated `__main__.py` to delegate to server.main(). 75 new tests (188 total).
+- TS-8: Client-side HTTP fetch in renderer — modified `scripts/tmux-claude-status` to add `_maybe_fetch_quota()` function using urllib.request, reads QUOTA_SOURCE/QUOTA_API_KEY/QUOTA_CACHE_TTL from settings.conf, atomic cache writes via temp+os.replace, handles "X" utilization values in Python output and bash bar_char/display functions. Silent failure on fetch exceptions.
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
@@ -20,12 +20,12 @@ Sixth execution session. Implemented TS-7 (server HTTP module — QuotaServer cl
 - TS-5: Done (session 4) — server packaging and entry points
 - TS-6: Done (session 5) — deployment files (systemd, launchd, Dockerfile)
 - TS-7: Done (session 6) — server HTTP module (QuotaServer, endpoints, auth, polling)
-- TS-8: Todo (NOW UNBLOCKED) — client-side HTTP fetch in renderer
-- TS-9: Todo (blocked by TS-8) — install script modifications
-- TS-10: Todo (blocked by TS-8) — uninstall script modifications
+- TS-8: Done (session 7) — client-side HTTP fetch in renderer
+- TS-9: Todo (NOW UNBLOCKED) — install script modifications
+- TS-10: Todo (NOW UNBLOCKED) — uninstall script modifications
 
 ## Current Blockers
-None. TS-8 is now unblocked (last story in wave 2). After TS-8, wave 3 (TS-9, TS-10) becomes unblocked.
+None. TS-9 and TS-10 are both unblocked (wave 3, final wave).
 
 ## Working Context
 
@@ -49,6 +49,13 @@ None. TS-8 is now unblocked (last story in wave 2). After TS-8, wave 3 (TS-9, TS
 - Auth hook uses `before_request` with early return for /health exemption
 - Background thread uses `threading.Event` for shutdown and wake signaling
 - Reference swap pattern: `self._cached_data = new_data` (no threading.Lock)
+- Renderer Python block parses settings.conf in a single loop for ALL settings (QUOTA_DATA_PATH, QUOTA_SOURCE, QUOTA_API_KEY, QUOTA_CACHE_TTL)
+- `_maybe_fetch_quota()` defined as function in embedded Python, called inline
+- Fetch timeout is 3 seconds (hardcoded, not configurable — renderer runs every 5s)
+- `json.loads(data)` used to validate JSON before atomic write to cache
+- `os.makedirs(cache_dir, exist_ok=True)` ensures cache directory exists before write
+- Non-numeric bar_char input returns red ✕ character
+- `fmt_quota_pct()` bash helper: "X" stays "X", numeric gets "%"
 
 ### Micro-Decisions
 - `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
@@ -67,6 +74,9 @@ None. TS-8 is now unblocked (last story in wave 2). After TS-8, wave 3 (TS-9, TS
 - `bottle.run()` called with `quiet=True` to suppress Bottle's default stdout logging
 - API key loaded once at `run()` start, not per-request (design choice for performance)
 - Health endpoint status logic: ok (data + last scrape ok), degraded (data + last scrape failed), error (no data)
+- `quota_cache_ttl` Python default is 30 (fallback when no settings.conf); installed settings.conf has 0
+- Only literal "error" status triggers "X" output; other error statuses (expired, blocked) keep pct=0 defaults — bash color override already handles visual signaling for those
+- shlex.quote() used for quota pct output to safely handle "X" string values in eval
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
@@ -78,20 +88,22 @@ None. TS-8 is now unblocked (last story in wave 2). After TS-8, wave 3 (TS-9, TS
 - `server/deploy/tmux-status-server.service` — Systemd user unit for Linux (TS-6)
 - `server/deploy/io.mikey.tmux-status-server.plist` — launchd plist for macOS (TS-6)
 - `server/Dockerfile` — Docker container image (TS-6)
-- `server/tests/test_config.py` — 22 tests for config module
-- `server/tests/test_scraper.py` — 36 tests for scraper module
-- `server/tests/test_package.py` — 21 tests for package structure (updated for TS-7)
-- `server/tests/test_server.py` — 75 tests for server module
-- `server/tests/test_deploy.py` — 34 tests for deployment files
+- `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing, "X" handling (TS-8)
 - `config/settings.example.conf` — User-facing settings with server keys (TS-4)
 - `.gitignore` — Security exclusions and Python artifacts (TS-4)
+- `server/tests/test_config.py` — 22 tests for config module
+- `server/tests/test_scraper.py` — 36 tests for scraper module
+- `server/tests/test_package.py` — 21 tests for package structure
+- `server/tests/test_server.py` — 75 tests for server module
+- `server/tests/test_deploy.py` — 34 tests for deployment files
 
 ### Test State
 - 188 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
 - pytest installed in `/home/mikey/.venv` (created via `uv venv`)
 - No flaky tests
+- No tests exist for `scripts/tmux-claude-status` (shell script, no test framework)
 
 ## What's Next
-- TS-8 (client-side HTTP fetch in renderer — modify `scripts/tmux-claude-status` to fetch quota from server via urllib.request) is the only remaining wave 2 story
-- After TS-8: TS-9 (install) and TS-10 (uninstall) become unblocked (wave 3)
-- 3 stories remaining total
+- TS-9 (install script modifications) and TS-10 (uninstall script modifications) are both unblocked — wave 3, final wave
+- Both modify shell scripts (install.sh, uninstall.sh) for server daemon management
+- 2 stories remaining total
