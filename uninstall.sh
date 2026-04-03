@@ -67,6 +67,41 @@ else
     info "No tmux.conf found with tmux-status source line (already clean)"
 fi
 
+# ── Stop and remove daemon (systemd/launchd) ──────────────────
+OS_TYPE="$(uname -s)"
+info "Stopping tmux-status-server daemon..."
+
+if [ "$OS_TYPE" = "Linux" ]; then
+    # systemd user unit
+    systemctl --user stop tmux-status-server 2>/dev/null || true
+    systemctl --user disable tmux-status-server 2>/dev/null || true
+    SYSTEMD_UNIT="$HOME/.config/systemd/user/tmux-status-server.service"
+    if [ -f "$SYSTEMD_UNIT" ]; then
+        rm "$SYSTEMD_UNIT"
+        systemctl --user daemon-reload 2>/dev/null || true
+        ok "Removed systemd unit: $SYSTEMD_UNIT"
+    else
+        info "No systemd unit found (already clean)"
+    fi
+elif [ "$OS_TYPE" = "Darwin" ]; then
+    # launchd plist
+    LAUNCHD_PLIST="$HOME/Library/LaunchAgents/io.mikey.tmux-status-server.plist"
+    if [ -f "$LAUNCHD_PLIST" ]; then
+        launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+        rm "$LAUNCHD_PLIST"
+        ok "Removed launchd plist: $LAUNCHD_PLIST"
+    else
+        info "No launchd plist found (already clean)"
+    fi
+else
+    warn "Unknown OS ($OS_TYPE) — skipping daemon teardown"
+fi
+
+# ── Uninstall server package ──────────────────────────────────
+info "Uninstalling tmux-status-server package..."
+pip3 uninstall -y tmux-status-server 2>/dev/null || true
+ok "Server package uninstall complete"
+
 # ── Remove symlinks from ~/.local/bin/ ─────────────────────────
 info "Removing symlinks from $BIN_DIR..."
 for script in "${SCRIPTS[@]}"; do
