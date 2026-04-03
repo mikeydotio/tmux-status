@@ -1,8 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-03T19:05:54Z","title":"T1.2: Server scraper module — Create `server/tmux_status_server/scraper.py` extracting scraping logic from existing `tmux-status-quota-fetch`. Provides `read_session_key()` and `fetch_quota()`. Uses curl_cffi. Error results with \"X\" utilization. Permission enforcement.","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-03T19:05:54Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-03T19:05:54Z","labels":["phase:1","scraper","server"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-7","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:05:54Z","other_id":"TS-8","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-03T19:06:01Z","other_id":"TS-1","relation":"child-of"}
-{"kind":"StoryStateChanged","at":"2026-04-03T19:24:28Z","state":"in-progress"}
-{"kind":"StoryStateChanged","at":"2026-04-03T19:28:22Z","state":"verifying"}

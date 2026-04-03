@@ -1,17 +1,19 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-007
-- **Duration**: ~7 minutes
+- **Session**: session-execute-008
+- **Duration**: ~5 minutes
 - **Stories completed**: 1
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Seventh execution session. Implemented TS-8 (client-side HTTP fetch in renderer — urllib.request-based quota fetch with cache TTL, atomic writes, X error handling) — passed evaluation on first attempt. Wave 2 is now complete (TS-7 + TS-8). Wave 3 (TS-9, TS-10) is now unblocked.
+Eighth execution session. Implemented TS-10 (uninstall script daemon teardown — OS detection, systemd/launchd removal, pip3 uninstall) — passed evaluation on first attempt. Wave 3 partially complete (TS-10 done, TS-9 remaining).
+
+Also fixed storyhook state inconsistencies: TS-3 and TS-5 were stuck in `verifying`/`todo` due to `git checkout .` reverting `.storyhook/` tracked files. Both were set back to `done`.
 
 ## Stories Completed This Session
-- TS-8: Client-side HTTP fetch in renderer — modified `scripts/tmux-claude-status` to add `_maybe_fetch_quota()` function using urllib.request, reads QUOTA_SOURCE/QUOTA_API_KEY/QUOTA_CACHE_TTL from settings.conf, atomic cache writes via temp+os.replace, handles "X" utilization values in Python output and bash bar_char/display functions. Silent failure on fetch exceptions.
+- TS-10: Uninstall script modifications — added daemon teardown section before symlink removal: OS detection via `uname -s`, Linux systemd stop/disable/remove with daemon-reload, macOS launchctl unload/remove, pip3 uninstall with silent failure on all commands.
 
 ## Cumulative Progress
 - TS-2: Done (session 1) — config module
@@ -21,11 +23,11 @@ Seventh execution session. Implemented TS-8 (client-side HTTP fetch in renderer 
 - TS-6: Done (session 5) — deployment files (systemd, launchd, Dockerfile)
 - TS-7: Done (session 6) — server HTTP module (QuotaServer, endpoints, auth, polling)
 - TS-8: Done (session 7) — client-side HTTP fetch in renderer
+- TS-10: Done (session 8) — uninstall script daemon teardown
 - TS-9: Todo (NOW UNBLOCKED) — install script modifications
-- TS-10: Todo (NOW UNBLOCKED) — uninstall script modifications
 
 ## Current Blockers
-None. TS-9 and TS-10 are both unblocked (wave 3, final wave).
+None. TS-9 is the only remaining story (wave 3, final story).
 
 ## Working Context
 
@@ -49,34 +51,24 @@ None. TS-9 and TS-10 are both unblocked (wave 3, final wave).
 - Auth hook uses `before_request` with early return for /health exemption
 - Background thread uses `threading.Event` for shutdown and wake signaling
 - Reference swap pattern: `self._cached_data = new_data` (no threading.Lock)
-- Renderer Python block parses settings.conf in a single loop for ALL settings (QUOTA_DATA_PATH, QUOTA_SOURCE, QUOTA_API_KEY, QUOTA_CACHE_TTL)
+- Renderer Python block parses settings.conf in a single loop for ALL settings
 - `_maybe_fetch_quota()` defined as function in embedded Python, called inline
-- Fetch timeout is 3 seconds (hardcoded, not configurable — renderer runs every 5s)
-- `json.loads(data)` used to validate JSON before atomic write to cache
-- `os.makedirs(cache_dir, exist_ok=True)` ensures cache directory exists before write
+- Fetch timeout is 3 seconds (hardcoded — renderer runs every 5s)
 - Non-numeric bar_char input returns red ✕ character
-- `fmt_quota_pct()` bash helper: "X" stays "X", numeric gets "%"
+- Shell scripts use `2>/dev/null || true` for silent failure on optional commands
+- Daemon teardown section placed BEFORE symlink removal in both install/uninstall
+- OS detection uses `uname -s` checking for "Linux" and "Darwin"
 
 ### Micro-Decisions
 - `read_session_key(path)` returns `{"error": "insecure_permissions"}` not `"no_key"` for bad permissions
-- `fetch_quota` uses `status_map` dict for HTTP→error code mapping: {401: "session_key_expired", 403: "blocked", 429: "rate_limited"}
-- `_http_get` lazy-imports `curl_cffi` to allow tests to mock without needing the actual package
-- `extract_window()` defined as nested function inside `fetch_quota`
+- `fetch_quota` uses `status_map` dict for HTTP→error code mapping
 - Deprecated settings get `# DEPRECATED: <reason>` comment prefix
-- .gitignore separates "Secrets and credentials" from "Python" sections
-- `__main__.py` imports `server.main as _server_main` for clear delegation
-- `pyproject.toml` build-backend uses `setuptools.backends._legacy:_Backend`
-- Dockerfile uses `--no-cache-dir` with pip install
-- Dockerfile COPY order: pyproject.toml first, then package dir (cache-friendly layering)
-- QuotaServer stores `_last_scrape_ok` boolean separately from `_cached_data` for health status
-- `_do_scrape()` re-reads session key via `read_session_key(self.key_file)` at top of each cycle
-- `_poll_loop()` calls `_do_scrape()` before entering the while loop (immediate first scrape)
-- `bottle.run()` called with `quiet=True` to suppress Bottle's default stdout logging
-- API key loaded once at `run()` start, not per-request (design choice for performance)
-- Health endpoint status logic: ok (data + last scrape ok), degraded (data + last scrape failed), error (no data)
 - `quota_cache_ttl` Python default is 30 (fallback when no settings.conf); installed settings.conf has 0
-- Only literal "error" status triggers "X" output; other error statuses (expired, blocked) keep pct=0 defaults — bash color override already handles visual signaling for those
+- Only literal "error" status triggers "X" output
 - shlex.quote() used for quota pct output to safely handle "X" string values in eval
+- systemd `daemon-reload` runs after removing unit file (not before)
+- pip3 uninstall uses `-y` flag (no confirmation prompt)
+- Uninstall outputs "Server package uninstall complete" even if pip3 fails (silent failure)
 
 ### Code Landmarks
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning (TS-2)
@@ -91,19 +83,16 @@ None. TS-9 and TS-10 are both unblocked (wave 3, final wave).
 - `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing, "X" handling (TS-8)
 - `config/settings.example.conf` — User-facing settings with server keys (TS-4)
 - `.gitignore` — Security exclusions and Python artifacts (TS-4)
-- `server/tests/test_config.py` — 22 tests for config module
-- `server/tests/test_scraper.py` — 36 tests for scraper module
-- `server/tests/test_package.py` — 21 tests for package structure
-- `server/tests/test_server.py` — 75 tests for server module
-- `server/tests/test_deploy.py` — 34 tests for deployment files
+- `install.sh` — Installer (to be modified by TS-9)
+- `uninstall.sh` — Uninstaller with daemon teardown and server uninstall (TS-10)
 
 ### Test State
 - 188 tests pass (pytest): `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -v`
 - pytest installed in `/home/mikey/.venv` (created via `uv venv`)
 - No flaky tests
-- No tests exist for `scripts/tmux-claude-status` (shell script, no test framework)
+- Test files: test_config.py (22), test_scraper.py (36), test_package.py (21), test_server.py (75), test_deploy.py (34)
 
 ## What's Next
-- TS-9 (install script modifications) and TS-10 (uninstall script modifications) are both unblocked — wave 3, final wave
-- Both modify shell scripts (install.sh, uninstall.sh) for server daemon management
-- 2 stories remaining total
+- TS-9 (install script modifications) is the ONLY remaining story — wave 3, final story
+- Modifies install.sh for server pip install, OS detection, systemd/launchd daemon setup
+- After TS-9 is done, all stories are complete → transition to review+validate
