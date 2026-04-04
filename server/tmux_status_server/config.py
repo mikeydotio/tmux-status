@@ -83,7 +83,7 @@ def warn_if_exposed(args):
     Args:
         args: Parsed argparse.Namespace from parse_args().
     """
-    if args.host != "127.0.0.1" and args.api_key_file is None:
+    if args.host not in ("127.0.0.1", "localhost", "::1") and args.api_key_file is None:
         logger.warning(
             "Listening on %s:%d with NO authentication.", args.host, args.port
         )

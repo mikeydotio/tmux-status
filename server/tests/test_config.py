@@ -247,6 +247,24 @@ class TestWarnIfExposedLocalhostVariants(unittest.TestCase):
         self.assertEqual(len(cm.output), 1)
         self.assertIn("sentinel", cm.output[0])
 
+    def test_no_warning_on_localhost_name(self):
+        """localhost does not trigger a warning."""
+        args = parse_args(["--host", "localhost"])
+        with self.assertLogs(level="WARNING") as cm:
+            logging.getLogger("test").warning("sentinel")
+            warn_if_exposed(args)
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("sentinel", cm.output[0])
+
+    def test_no_warning_on_ipv6_loopback(self):
+        """::1 does not trigger a warning."""
+        args = parse_args(["--host", "::1"])
+        with self.assertLogs(level="WARNING") as cm:
+            logging.getLogger("test").warning("sentinel")
+            warn_if_exposed(args)
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("sentinel", cm.output[0])
+
     def test_warning_on_all_interfaces(self):
         """0.0.0.0 triggers a warning when no auth configured."""
         args = parse_args(["--host", "0.0.0.0"])
