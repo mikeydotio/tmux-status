@@ -2,3 +2,5 @@
 {"kind":"StoryPrioritySet","at":"2026-04-04T01:09:54Z","priority":"critical"}
 {"kind":"StoryLabelsSet","at":"2026-04-04T01:09:54Z","labels":["fix-cycle-1","phase:1"]}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T01:09:54Z","other_id":"TS-14","relation":"child-of"}
+{"kind":"StoryStateChanged","at":"2026-04-04T01:19:47Z","state":"in-progress"}
+{"kind":"StoryStateChanged","at":"2026-04-04T01:21:34Z","state":"verifying"}

@@ -262,6 +262,7 @@ elif [ "$OS_TYPE" = "Darwin" ]; then
     LAUNCHD_PLIST="$LAUNCHD_DIR/io.mikey.tmux-status-server.plist"
     mkdir -p "$LAUNCHD_DIR"
     cp "$INSTALL_DIR/server/deploy/io.mikey.tmux-status-server.plist" "$LAUNCHD_PLIST"
+    sed -i '' "s|~/.local/bin/tmux-status-server|$HOME/.local/bin/tmux-status-server|g" "$LAUNCHD_PLIST"
     launchctl load "$LAUNCHD_PLIST" 2>/dev/null || true
     ok "launchd plist installed and loaded"
 else
