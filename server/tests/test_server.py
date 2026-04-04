@@ -304,15 +304,14 @@ class TestMainModuleUpdated(unittest.TestCase):
         """__main__.py no longer exits with code 1 (placeholder removed)."""
         self.assertNotIn("sys.exit(1)", self.source)
 
-    def test_still_imports_config(self):
-        """__main__.py still imports parse_args and warn_if_exposed."""
+    def test_no_config_imports(self):
+        """__main__.py does not import from config."""
         config_imports = []
         for node in ast.walk(self.tree):
             if isinstance(node, ast.ImportFrom):
                 if node.module and "config" in node.module:
                     config_imports.extend(alias.name for alias in node.names)
-        self.assertIn("parse_args", config_imports)
-        self.assertIn("warn_if_exposed", config_imports)
+        self.assertEqual(config_imports, [], "Expected no config imports in __main__.py")
 
 
 # ---------------------------------------------------------------------------

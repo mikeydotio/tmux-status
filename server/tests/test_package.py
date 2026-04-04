@@ -69,26 +69,8 @@ class TestMainModule(unittest.TestCase):
         ]
         self.assertIn("main", func_names)
 
-    def test_main_calls_parse_args(self):
-        """main() calls parse_args from the config module."""
-        main_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "__main__.py"
-        )
-        with open(main_path) as f:
-            source = f.read()
-        self.assertIn("parse_args", source)
-
-    def test_main_calls_warn_if_exposed(self):
-        """main() calls warn_if_exposed from the config module."""
-        main_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "__main__.py"
-        )
-        with open(main_path) as f:
-            source = f.read()
-        self.assertIn("warn_if_exposed", source)
-
-    def test_main_imports_config(self):
-        """__main__.py imports from tmux_status_server.config."""
+    def test_main_no_unused_config_imports(self):
+        """__main__.py does not import parse_args or warn_if_exposed."""
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "tmux_status_server", "__main__.py"
         )
@@ -98,12 +80,11 @@ class TestMainModule(unittest.TestCase):
         config_imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                if node.module and "config" in node.module:
-                    imported_names = [alias.name for alias in node.names]
-                    config_imports.extend(imported_names)
+                imported_names = [alias.name for alias in node.names]
+                config_imports.extend(imported_names)
 
-        self.assertIn("parse_args", config_imports)
-        self.assertIn("warn_if_exposed", config_imports)
+        self.assertNotIn("parse_args", config_imports)
+        self.assertNotIn("warn_if_exposed", config_imports)
 
     def test_main_has_if_name_main_guard(self):
         """__main__.py has an ``if __name__ == '__main__'`` guard."""

@@ -1,6 +1,5 @@
 """Entry point for ``python -m tmux_status_server``."""
 
-from tmux_status_server.config import parse_args, warn_if_exposed
 from tmux_status_server.server import main as _server_main
 
 
