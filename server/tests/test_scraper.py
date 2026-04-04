@@ -336,6 +336,113 @@ class TestOrgUuidCaching(unittest.TestCase):
         self.assertEqual(len(org_calls), 1)
 
 
+class TestOrgUuidResetOnAuthError(unittest.TestCase):
+    """Test that _org_uuid is reset to None on 401/403 from usage endpoint."""
+
+    def setUp(self):
+        scraper._org_uuid = None
+
+    def _mock_http_get(self, responses):
+        """Create a side_effect function for _http_get."""
+        def side_effect(url, session_key):
+            for pattern, response in responses.items():
+                if url.endswith(pattern):
+                    return response
+            return (500, None)
+        return side_effect
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_401_on_usage_resets_org_uuid(self, mock_get):
+        """HTTP 401 on usage endpoint resets _org_uuid to None."""
+        mock_get.side_effect = self._mock_http_get({
+            "/organizations": (200, [{"uuid": "org-will-be-cleared"}]),
+            "/usage": (401, None),
+        })
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "session_key_expired")
+        self.assertIsNone(scraper._org_uuid,
+                          "_org_uuid should be None after 401 on usage endpoint")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_403_on_usage_resets_org_uuid(self, mock_get):
+        """HTTP 403 on usage endpoint resets _org_uuid to None."""
+        mock_get.side_effect = self._mock_http_get({
+            "/organizations": (200, [{"uuid": "org-will-be-cleared"}]),
+            "/usage": (403, None),
+        })
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "blocked")
+        self.assertIsNone(scraper._org_uuid,
+                          "_org_uuid should be None after 403 on usage endpoint")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_401_on_usage_with_precached_uuid_resets(self, mock_get):
+        """HTTP 401 on usage endpoint resets even a pre-cached _org_uuid."""
+        scraper._org_uuid = "org-pre-cached"
+        mock_get.return_value = (401, None)
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "session_key_expired")
+        self.assertIsNone(scraper._org_uuid,
+                          "_org_uuid should be None after 401 even when pre-cached")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_403_on_usage_with_precached_uuid_resets(self, mock_get):
+        """HTTP 403 on usage endpoint resets even a pre-cached _org_uuid."""
+        scraper._org_uuid = "org-pre-cached"
+        mock_get.return_value = (403, None)
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "blocked")
+        self.assertIsNone(scraper._org_uuid,
+                          "_org_uuid should be None after 403 even when pre-cached")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_429_on_usage_does_not_reset_org_uuid(self, mock_get):
+        """HTTP 429 on usage endpoint does NOT reset _org_uuid."""
+        scraper._org_uuid = "org-keep-this"
+        mock_get.return_value = (429, None)
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "rate_limited")
+        self.assertEqual(scraper._org_uuid, "org-keep-this",
+                         "_org_uuid should be preserved after 429")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_500_on_usage_does_not_reset_org_uuid(self, mock_get):
+        """HTTP 500 on usage endpoint does NOT reset _org_uuid."""
+        scraper._org_uuid = "org-keep-this"
+        mock_get.return_value = (500, None)
+        result = fetch_quota("sk-ant-test")
+        self.assertEqual(result["status"], "upstream_error")
+        self.assertEqual(scraper._org_uuid, "org-keep-this",
+                         "_org_uuid should be preserved after 500")
+
+    @mock.patch("tmux_status_server.scraper._http_get")
+    def test_next_call_rediscovers_org_after_401_reset(self, mock_get):
+        """After 401 resets _org_uuid, next fetch_quota re-discovers the org."""
+        # First call: org discovery succeeds, usage returns 401
+        mock_get.side_effect = [
+            (200, [{"uuid": "org-old"}]),
+            (401, None),
+            # Second call: re-discovers org, usage succeeds
+            (200, [{"uuid": "org-new"}]),
+            (200, {
+                "five_hour": {"utilization": 10, "resets_at": None},
+                "seven_day": {"utilization": 5, "resets_at": None},
+            }),
+        ]
+
+        # First call fails with 401 and resets _org_uuid
+        result1 = fetch_quota("sk-ant-test")
+        self.assertEqual(result1["status"], "session_key_expired")
+        self.assertIsNone(scraper._org_uuid)
+
+        # Second call should re-discover org (calls /organizations again)
+        result2 = fetch_quota("sk-ant-test")
+        self.assertEqual(result2["status"], "ok")
+        self.assertEqual(scraper._org_uuid, "org-new")
+        # Verify 4 total calls: orgs + usage(401) + orgs + usage(ok)
+        self.assertEqual(mock_get.call_count, 4)
+
+
 class TestRequestHeaders(unittest.TestCase):
     """Test that REQUEST_HEADERS matches expected values."""
 

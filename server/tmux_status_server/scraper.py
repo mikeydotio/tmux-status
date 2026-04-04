@@ -143,6 +143,8 @@ def fetch_quota(session_key):
             session_key,
         )
         if http_status != 200:
+            if http_status in (401, 403):
+                _org_uuid = None
             error_code = status_map.get(http_status, "upstream_error")
             return _error_bridge(error_code, error_code)
 
