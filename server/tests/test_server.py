@@ -697,18 +697,27 @@ class TestSignalHandling(unittest.TestCase):
     """Test signal handler methods."""
 
     def test_sigterm_sets_shutdown(self):
-        """SIGTERM handler sets the shutdown event."""
+        """SIGTERM handler sets events and raises SystemExit."""
         server, _, _, _, _ = _make_server()
         self.assertFalse(server._shutdown.is_set())
-        server._handle_sigterm(signal.SIGTERM, None)
+        with self.assertRaises(SystemExit):
+            server._handle_sigterm(signal.SIGTERM, None)
         self.assertTrue(server._shutdown.is_set())
         self.assertTrue(server._wake.is_set())
 
     def test_sigint_sets_shutdown(self):
-        """SIGINT handler sets the shutdown event."""
+        """SIGINT handler sets events and raises SystemExit."""
         server, _, _, _, _ = _make_server()
-        server._handle_sigterm(signal.SIGINT, None)
+        with self.assertRaises(SystemExit):
+            server._handle_sigterm(signal.SIGINT, None)
         self.assertTrue(server._shutdown.is_set())
+
+    def test_sigterm_exit_code_zero(self):
+        """SystemExit raised by SIGTERM handler has code 0."""
+        server, _, _, _, _ = _make_server()
+        with self.assertRaises(SystemExit) as cm:
+            server._handle_sigterm(signal.SIGTERM, None)
+        self.assertEqual(cm.exception.code, 0)
 
     def test_sigusr1_sets_wake_not_shutdown(self):
         """SIGUSR1 handler wakes the poll thread but does not shut down."""

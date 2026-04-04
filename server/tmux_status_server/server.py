@@ -162,10 +162,11 @@ class QuotaServer:
             self._do_scrape()
 
     def _handle_sigterm(self, signum, frame):
-        """Handle SIGTERM/SIGINT: set shutdown flag."""
+        """Handle SIGTERM/SIGINT: raise SystemExit to stop serve_forever()."""
         logger.info("Received signal %d, shutting down", signum)
         self._shutdown.set()
         self._wake.set()
+        raise SystemExit(0)
 
     def _handle_sigusr1(self, signum, frame):
         """Handle SIGUSR1: wake poll thread for immediate scrape."""
