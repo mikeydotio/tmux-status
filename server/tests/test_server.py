@@ -1341,5 +1341,142 @@ class TestKeyRotationSupport(unittest.TestCase):
         self.assertTrue(server._last_scrape_ok)  # recovered
 
 
+# ---------------------------------------------------------------------------
+# WSGI Integration Tests — Auth via webtest.TestApp
+# ---------------------------------------------------------------------------
+
+def _make_wsgi_server(**overrides):
+    """Create a QuotaServer with real Bottle (no mocks) for WSGI integration tests.
+
+    Returns a (server, TestApp) tuple.
+    """
+    from webtest import TestApp
+    from tmux_status_server.server import QuotaServer
+
+    defaults = {
+        "host": "127.0.0.1",
+        "port": 7850,
+        "key_file": "/tmp/k.json",
+        "api_key_file": None,
+        "interval": 300,
+    }
+    defaults.update(overrides)
+    server = QuotaServer(**defaults)
+    app = TestApp(server._app)
+    return server, app
+
+
+_SAMPLE_QUOTA_DATA = {
+    "status": "ok",
+    "org_uuid": "org-abc-123",
+    "five_hour": {"utilization": 42, "resets_at": "2026-04-03T18:30:00Z"},
+    "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
+    "timestamp": 1743696000,
+}
+
+
+class TestAuthIntegrationWSGI(unittest.TestCase):
+    """WSGI integration tests proving auth blocks data leakage.
+
+    Uses webtest.TestApp wrapping the real Bottle pipeline — no mocking
+    of Bottle internals.
+    """
+
+    def test_valid_key_returns_200_with_data(self):
+        """Valid X-API-Key header returns 200 with full quota data."""
+        server, app = _make_wsgi_server()
+        server._api_key = "test-secret"
+        server._cached_data = dict(_SAMPLE_QUOTA_DATA)
+
+        resp = app.get("/quota", headers={"X-API-Key": "test-secret"})
+        self.assertEqual(resp.status_int, 200)
+        data = resp.json
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["org_uuid"], "org-abc-123")
+        self.assertEqual(data["five_hour"]["utilization"], 42)
+        self.assertEqual(data["seven_day"]["utilization"], 15)
+
+    def test_wrong_key_returns_401_no_data(self):
+        """Wrong X-API-Key header returns 401 with zero quota data."""
+        server, app = _make_wsgi_server()
+        server._api_key = "correct-secret"
+        server._cached_data = dict(_SAMPLE_QUOTA_DATA)
+
+        resp = app.get("/quota", headers={"X-API-Key": "wrong-key"},
+                        expect_errors=True)
+        self.assertEqual(resp.status_int, 401)
+        body_text = resp.text
+        self.assertIn("invalid_or_missing_api_key", body_text)
+        # Prove zero quota data leaked
+        self.assertNotIn("utilization", body_text)
+        self.assertNotIn("org_uuid", body_text)
+        self.assertNotIn("org-abc-123", body_text)
+        self.assertNotIn("five_hour", body_text)
+        self.assertNotIn("seven_day", body_text)
+
+    def test_missing_key_returns_401_no_data(self):
+        """Missing X-API-Key header returns 401 with zero quota data."""
+        server, app = _make_wsgi_server()
+        server._api_key = "test-secret"
+        server._cached_data = dict(_SAMPLE_QUOTA_DATA)
+
+        resp = app.get("/quota", expect_errors=True)
+        self.assertEqual(resp.status_int, 401)
+        body_text = resp.text
+        self.assertIn("invalid_or_missing_api_key", body_text)
+        # Prove zero quota data leaked
+        self.assertNotIn("utilization", body_text)
+        self.assertNotIn("org_uuid", body_text)
+        self.assertNotIn("org-abc-123", body_text)
+        self.assertNotIn("five_hour", body_text)
+        self.assertNotIn("seven_day", body_text)
+
+    def test_health_returns_200_always(self):
+        """/health returns 200 even when auth is configured and no key provided."""
+        server, app = _make_wsgi_server()
+        server._api_key = "test-secret"
+        server._cached_data = {"status": "ok"}
+        server._last_scrape_ok = True
+
+        resp = app.get("/health")
+        self.assertEqual(resp.status_int, 200)
+        data = resp.json
+        self.assertIn("status", data)
+        self.assertIn("uptime_seconds", data)
+        self.assertIn("version", data)
+
+    def test_no_auth_configured_returns_200(self):
+        """/quota returns 200 without any auth header when no API key configured."""
+        server, app = _make_wsgi_server()
+        server._api_key = None
+        server._cached_data = dict(_SAMPLE_QUOTA_DATA)
+
+        resp = app.get("/quota")
+        self.assertEqual(resp.status_int, 200)
+        data = resp.json
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["org_uuid"], "org-abc-123")
+        self.assertEqual(data["five_hour"]["utilization"], 42)
+
+    def test_empty_key_file_means_no_auth(self):
+        """When API key file is empty, _api_key is None so /quota is open."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
+            f.write("")
+            key_path = f.name
+        try:
+            server, app = _make_wsgi_server(api_key_file=key_path)
+            server._api_key = server._load_api_key()
+            self.assertIsNone(server._api_key)
+            server._cached_data = dict(_SAMPLE_QUOTA_DATA)
+
+            resp = app.get("/quota")
+            self.assertEqual(resp.status_int, 200)
+            data = resp.json
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["org_uuid"], "org-abc-123")
+        finally:
+            os.unlink(key_path)
+
+
 if __name__ == "__main__":
     unittest.main()
