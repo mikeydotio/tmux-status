@@ -1,22 +1,24 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-fix1-003
-- **Stories completed**: 1 (TS-17)
+- **Session**: session-fix1-004
+- **Stories completed**: 1 (TS-18)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Fix cycle 1, session 3. Implemented TS-17 (renderer status fallthrough fix). Added `else` clause after `elif quota_status == "error"` in the embedded Python block of `scripts/tmux-claude-status`, setting both `five_hour_pct` and `seven_day_pct` to `"X"` for any unrecognized status (expired, blocked, rate_limited, etc.). This ensures the renderer displays X% instead of 0% for non-ok statuses.
+Fix cycle 1, session 4. Implemented TS-18 (Dockerfile default bind address). Added `CMD ["--host", "0.0.0.0"]` after `ENTRYPOINT ["tmux-status-server"]` in `server/Dockerfile`. Added `TestDockerfileCmd` test class in `test_deploy.py` with 3 tests: cmd_present, cmd_binds_all_interfaces, cmd_after_entrypoint.
+
+Also recovered TS-16 and TS-17 storyhook state — both were committed in prior sessions but storyhook state wasn't synced (TS-16 stuck in verifying, TS-17 stuck in todo).
 
 ## Stories Completed This Session
-- TS-17: Fix renderer status fallthrough — added else clause in Python quota status handling
+- TS-18: Fix Dockerfile default bind address — added CMD and test class
 
 ## Fix Cycle 1 Progress
 - TS-15: Done (session 1) — pyproject.toml build backend
-- TS-16: Done (session 2) — launchd plist tilde expansion
-- TS-17: Done (this session) — renderer status fallthrough
-- TS-18: Todo — Dockerfile bind address
+- TS-16: Done (session 2, state recovered session 4) — launchd plist tilde expansion
+- TS-17: Done (session 3, state recovered session 4) — renderer status fallthrough
+- TS-18: Done (this session) — Dockerfile bind address
 - TS-19: Todo — install.sh hardcoded path
 - TS-20: Todo — warn_if_exposed safe addresses
 - TS-21: Todo — stale org UUID on auth errors
@@ -42,26 +44,31 @@ None.
 - Embedded Python in tmux-claude-status uses `if/elif/else` chain for quota_status handling
 - Downstream bash `bar_char()` handles non-numeric "X" with red error indicator
 - `fmt_quota_pct()` passes "X" through without appending "%"
+- Dockerfile uses ENTRYPOINT for the binary, CMD for default args (Docker exec form)
 
 ### Micro-Decisions
 - Added packages.find section to pyproject.toml to prevent setuptools flat-layout picking up `deploy/` directory
 - launchd sed specifically matches `~/.local/bin/tmux-status-server` rather than a generic `~` replacement to avoid unintended substitutions
-- The else clause for status fallthrough does NOT read reset times (unlike the "error" branch) — for unknown statuses, reset times show as "?" via fmt_reset(""), which matches the "error" behavior since error responses also have null resets_at
+- The else clause for status fallthrough does NOT read reset times (unlike the "error" branch)
+- CMD uses JSON exec form `["--host", "0.0.0.0"]` for proper signal handling in Docker
 
 ### Code Landmarks
 - `server/pyproject.toml` — Package metadata, deps, console script entry point, packages.find section
 - `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning
 - `server/tmux_status_server/scraper.py` — Session key reading and quota fetching
 - `server/tmux_status_server/server.py` — QuotaServer class, HTTP endpoints, auth, polling
+- `server/Dockerfile` — ENTRYPOINT + CMD, binds 0.0.0.0 by default
 - `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing, quota status handling (lines 186-204)
 - `install.sh` — Installer with server pip install, daemon setup, launchd sed fix
 - `uninstall.sh` — Uninstaller with daemon teardown
 
 ### Test State
-- 223 tests pass: `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -q`
+- 226 tests pass: `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -q`
 - No flaky tests
 - Test files: test_config.py, test_scraper.py, test_package.py, test_server.py, test_deploy.py
 
 ## What's Next
-- TS-18: Fix Dockerfile default bind address — add CMD ["--host", "0.0.0.0"]
-- 4 fix stories remaining, all independent (wave 1)
+- TS-19: Fix install.sh hardcoded path — unquoted heredoc delimiter for variable expansion
+- TS-20: Expand warn_if_exposed safe addresses — add localhost, ::1
+- TS-21: Reset stale org UUID on auth errors
+- 3 fix stories remaining, all independent (wave 1)
