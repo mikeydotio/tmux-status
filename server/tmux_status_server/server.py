@@ -79,9 +79,7 @@ class QuotaServer:
                 return
             provided = request.get_header("X-API-Key")
             if provided is None or not hmac.compare_digest(provided, self._api_key):
-                response.status = 401
-                response.content_type = "application/json"
-                return json.dumps({"error": "invalid_or_missing_api_key"})
+                abort(401, json.dumps({"error": "invalid_or_missing_api_key"}))
 
         @app.route("/quota")
         def quota():

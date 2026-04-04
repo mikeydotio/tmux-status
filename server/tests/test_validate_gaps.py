@@ -406,8 +406,9 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "my-secret-key-12345"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "my-secret"
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        self.assertEqual(mb.abort.call_args[0][0], 401)
 
     def test_auth_rejects_key_with_extra_chars(self):
         """API key with appended characters is rejected."""
@@ -416,8 +417,9 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "my-secret-key"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "my-secret-key-extra"
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        self.assertEqual(mb.abort.call_args[0][0], 401)
 
     def test_auth_rejects_case_different_key(self):
         """API key comparison is case-sensitive."""
@@ -426,8 +428,9 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "MySecretKey"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "mysecretkey"
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        self.assertEqual(mb.abort.call_args[0][0], 401)
 
     def test_auth_rejects_null_byte_injection(self):
         """API key with null bytes injected is rejected."""
@@ -436,8 +439,9 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "valid-key"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "valid-key\x00extra"
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        self.assertEqual(mb.abort.call_args[0][0], 401)
 
     def test_auth_401_response_is_json(self):
         """Auth failure returns valid JSON with correct error code."""
@@ -446,8 +450,10 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "correct"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "wrong"
-        result = hooks["before_request"]()
-        data = json.loads(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        body = mb.abort.call_args[0][1]
+        data = json.loads(body)
         self.assertEqual(data["error"], "invalid_or_missing_api_key")
 
     def test_auth_does_not_leak_expected_key(self):
@@ -457,8 +463,10 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
         server._api_key = "super-secret-dont-leak"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "wrong"
-        result = hooks["before_request"]()
-        self.assertNotIn("super-secret-dont-leak", result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        body = mb.abort.call_args[0][1]
+        self.assertNotIn("super-secret-dont-leak", body)
 
 
 # ---------------------------------------------------------------------------

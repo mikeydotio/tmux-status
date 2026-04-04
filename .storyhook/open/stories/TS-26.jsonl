@@ -4,3 +4,5 @@
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-25","relation":"child-of"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-29","relation":"blocks"}
 {"kind":"StoryCommentAdded","at":"2026-04-04T02:38:11Z","text":"Acceptance: (1) check_auth calls abort(401, ...) instead of return. (2) Remove response.status = 401 and response.content_type lines since abort() handles status. abort is already imported at line 68. (3) All existing tests pass (update mocks if needed — hook now raises HTTPError instead of returning)."}
+{"kind":"StoryStateChanged","at":"2026-04-04T02:41:13Z","state":"in-progress"}
+{"kind":"StoryStateChanged","at":"2026-04-04T02:43:51Z","state":"verifying"}

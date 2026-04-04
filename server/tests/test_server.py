@@ -527,25 +527,29 @@ class TestAuthHook(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_blocks_missing_header(self):
-        """When API key configured, missing X-API-Key returns 401 JSON."""
+        """When API key configured, missing X-API-Key calls abort(401)."""
         server, routes, hooks, errors, mb = _make_server(api_key_file="/tmp/api.key")
         server._api_key = "test-secret-key"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = None
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
-        data = json.loads(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        args = mb.abort.call_args[0]
+        self.assertEqual(args[0], 401)
+        data = json.loads(args[1])
         self.assertEqual(data["error"], "invalid_or_missing_api_key")
 
     def test_blocks_wrong_key(self):
-        """When API key configured, wrong X-API-Key returns 401 JSON."""
+        """When API key configured, wrong X-API-Key calls abort(401)."""
         server, routes, hooks, errors, mb = _make_server(api_key_file="/tmp/api.key")
         server._api_key = "correct-key"
         mb.request.path = "/quota"
         mb.request.get_header.return_value = "wrong-key"
-        result = hooks["before_request"]()
-        self.assertIsNotNone(result)
-        data = json.loads(result)
+        hooks["before_request"]()
+        mb.abort.assert_called_once()
+        args = mb.abort.call_args[0]
+        self.assertEqual(args[0], 401)
+        data = json.loads(args[1])
         self.assertEqual(data["error"], "invalid_or_missing_api_key")
 
     def test_passes_correct_key(self):
