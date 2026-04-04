@@ -17,9 +17,6 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for org UUID to avoid re-discovery on every call.
-_org_uuid = None
-
 REQUEST_HEADERS = {
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -106,49 +103,40 @@ def _http_get(url, session_key):
     return r.status_code, body
 
 
-def fetch_quota(session_key):
+def fetch_quota(session_key, org_uuid=None):
     """Fetch Claude API usage quota for the given session key.
-
-    Discovers the organization UUID on first call and caches it at module
-    level for subsequent calls. Returns a bridge-format dict on success,
-    or an error dict with ``"X"`` utilization values on failure.
 
     Args:
         session_key: The claude.ai session key string.
+        org_uuid: Cached organization UUID, or None to discover.
 
     Returns:
-        Bridge-format dict with ``status``, ``five_hour``, ``seven_day``,
-        and ``timestamp`` keys.
+        Tuple of (bridge_dict, org_uuid). The org_uuid may be updated
+        (discovered) or cleared (on 401/403).
     """
-    global _org_uuid
-
     status_map = {401: "session_key_expired", 403: "blocked", 429: "rate_limited"}
 
-    # 1. Org discovery — use cached UUID or fetch from API.
     try:
-        if not _org_uuid:
+        if not org_uuid:
             http_status, orgs = _http_get(
                 "https://claude.ai/api/organizations", session_key
             )
             if http_status != 200:
                 error_code = status_map.get(http_status, "upstream_error")
-                return _error_bridge(error_code, error_code)
+                return _error_bridge(error_code, error_code), None
             if not isinstance(orgs, list) or len(orgs) == 0:
-                return _error_bridge("upstream_error", "upstream_error")
-            _org_uuid = orgs[0]["uuid"]
+                return _error_bridge("upstream_error", "upstream_error"), None
+            org_uuid = orgs[0]["uuid"]
 
-        # 2. Fetch usage data.
         http_status, usage = _http_get(
-            f"https://claude.ai/api/organizations/{_org_uuid}/usage",
+            f"https://claude.ai/api/organizations/{org_uuid}/usage",
             session_key,
         )
         if http_status != 200:
-            if http_status in (401, 403):
-                _org_uuid = None
+            new_org_uuid = None if http_status in (401, 403) else org_uuid
             error_code = status_map.get(http_status, "upstream_error")
-            return _error_bridge(error_code, error_code)
+            return _error_bridge(error_code, error_code), new_org_uuid
 
-        # 3. Build bridge output.
         def extract_window(data, name):
             w = data.get(name) or {}
             return {
@@ -158,13 +146,13 @@ def fetch_quota(session_key):
 
         return {
             "status": "ok",
-            "org_uuid": _org_uuid,
+            "org_uuid": org_uuid,
             "five_hour": extract_window(usage, "five_hour"),
             "seven_day": extract_window(usage, "seven_day"),
             "timestamp": int(time.time()),
-        }
+        }, org_uuid
 
     except ImportError:
-        return _error_bridge("upstream_error", "upstream_error")
+        return _error_bridge("upstream_error", "upstream_error"), org_uuid
     except Exception:
-        return _error_bridge("upstream_error", "upstream_error")
+        return _error_bridge("upstream_error", "upstream_error"), org_uuid

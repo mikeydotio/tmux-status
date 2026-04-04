@@ -142,10 +142,6 @@ class TestReadSessionKey(unittest.TestCase):
 class TestFetchQuota(unittest.TestCase):
     """Test quota fetching with mocked HTTP."""
 
-    def setUp(self):
-        # Reset module-level org UUID cache before each test.
-        scraper._org_uuid = None
-
     def _mock_http_get(self, responses):
         """Create a side_effect function for _http_get that returns
         different responses for different URLs.
@@ -172,9 +168,10 @@ class TestFetchQuota(unittest.TestCase):
             }),
         })
 
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result.get("org_uuid"), "org-123-abc")
+        self.assertEqual(org_uuid, "org-123-abc")
         self.assertEqual(result["five_hour"]["utilization"], 42)
         self.assertEqual(result["five_hour"]["resets_at"], "2026-04-03T18:30:00Z")
         self.assertEqual(result["seven_day"]["utilization"], 15)
@@ -187,9 +184,10 @@ class TestFetchQuota(unittest.TestCase):
     def test_http_401_maps_to_session_key_expired(self, mock_get):
         """HTTP 401 on org discovery maps to session_key_expired."""
         mock_get.return_value = (401, None)
-        result = fetch_quota("sk-ant-expired")
+        result, org_uuid = fetch_quota("sk-ant-expired")
         self.assertEqual(result["status"], "session_key_expired")
         self.assertEqual(result["error"], "session_key_expired")
+        self.assertIsNone(org_uuid)
         self.assertEqual(result["five_hour"]["utilization"], "X")
         self.assertIsNone(result["five_hour"]["resets_at"])
         self.assertEqual(result["seven_day"]["utilization"], "X")
@@ -199,9 +197,10 @@ class TestFetchQuota(unittest.TestCase):
     def test_http_403_maps_to_blocked(self, mock_get):
         """HTTP 403 maps to blocked error."""
         mock_get.return_value = (403, None)
-        result = fetch_quota("sk-ant-blocked")
+        result, org_uuid = fetch_quota("sk-ant-blocked")
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["error"], "blocked")
+        self.assertIsNone(org_uuid)
         self.assertEqual(result["five_hour"]["utilization"], "X")
         self.assertEqual(result["seven_day"]["utilization"], "X")
 
@@ -209,7 +208,7 @@ class TestFetchQuota(unittest.TestCase):
     def test_http_429_maps_to_rate_limited(self, mock_get):
         """HTTP 429 maps to rate_limited error."""
         mock_get.return_value = (429, None)
-        result = fetch_quota("sk-ant-throttled")
+        result, _ = fetch_quota("sk-ant-throttled")
         self.assertEqual(result["status"], "rate_limited")
         self.assertEqual(result["error"], "rate_limited")
         self.assertEqual(result["five_hour"]["utilization"], "X")
@@ -222,15 +221,16 @@ class TestFetchQuota(unittest.TestCase):
             "/organizations": (200, [{"uuid": "org-123"}]),
             "/usage": (401, None),
         })
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "session_key_expired")
         self.assertEqual(result["error"], "session_key_expired")
+        self.assertIsNone(org_uuid)
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_http_500_maps_to_upstream_error(self, mock_get):
         """Unexpected HTTP status codes map to upstream_error."""
         mock_get.return_value = (500, None)
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
 
@@ -238,7 +238,7 @@ class TestFetchQuota(unittest.TestCase):
     def test_network_error_returns_upstream_error(self, mock_get):
         """Network exceptions produce upstream_error."""
         mock_get.side_effect = ConnectionError("network down")
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
         self.assertEqual(result["five_hour"]["utilization"], "X")
@@ -248,7 +248,7 @@ class TestFetchQuota(unittest.TestCase):
     def test_timeout_error_returns_upstream_error(self, mock_get):
         """Timeout exceptions produce upstream_error."""
         mock_get.side_effect = TimeoutError("timed out")
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
 
@@ -256,28 +256,27 @@ class TestFetchQuota(unittest.TestCase):
     def test_empty_org_list_returns_upstream_error(self, mock_get):
         """Empty organizations list returns upstream_error."""
         mock_get.return_value = (200, [])
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
+        self.assertIsNone(org_uuid)
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_non_list_org_response_returns_upstream_error(self, mock_get):
         """Non-list organizations response returns upstream_error."""
         mock_get.return_value = (200, {"error": "something"})
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
+        self.assertIsNone(org_uuid)
 
 
 class TestOrgUuidCaching(unittest.TestCase):
-    """Test that org UUID is cached at module level."""
-
-    def setUp(self):
-        scraper._org_uuid = None
+    """Test that org UUID is returned from fetch_quota for caller caching."""
 
     @mock.patch("tmux_status_server.scraper._http_get")
-    def test_org_uuid_cached_after_first_call(self, mock_get):
-        """Org UUID is stored in module-level _org_uuid after first call."""
+    def test_org_uuid_returned_after_first_call(self, mock_get):
+        """Org UUID is returned in the tuple after first call."""
         mock_get.side_effect = [
             (200, [{"uuid": "org-cached-123"}]),
             (200, {
@@ -285,27 +284,25 @@ class TestOrgUuidCaching(unittest.TestCase):
                 "seven_day": {"utilization": 5, "resets_at": None},
             }),
         ]
-        fetch_quota("sk-ant-test")
-        self.assertEqual(scraper._org_uuid, "org-cached-123")
+        result, org_uuid = fetch_quota("sk-ant-test")
+        self.assertEqual(org_uuid, "org-cached-123")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_cached_org_uuid_skips_org_discovery(self, mock_get):
-        """When _org_uuid is set, org discovery API call is skipped."""
-        scraper._org_uuid = "org-pre-cached"
+        """When org_uuid is passed, org discovery API call is skipped."""
         mock_get.return_value = (200, {
             "five_hour": {"utilization": 20, "resets_at": None},
             "seven_day": {"utilization": 8, "resets_at": None},
         })
 
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test", org_uuid="org-pre-cached")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["org_uuid"], "org-pre-cached")
+        self.assertEqual(org_uuid, "org-pre-cached")
         # Should only have called _http_get once (usage, not orgs)
         self.assertEqual(mock_get.call_count, 1)
         call_url = mock_get.call_args[0][0]
         self.assertIn("/usage", call_url)
-        # The URL will contain /organizations/{uuid}/usage — but it should
-        # NOT be the bare /organizations endpoint (which ends without /usage).
         self.assertFalse(
             call_url.endswith("/organizations"),
             "Should not call the org discovery endpoint when UUID is cached",
@@ -313,7 +310,7 @@ class TestOrgUuidCaching(unittest.TestCase):
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_org_uuid_discovered_then_reused(self, mock_get):
-        """Two sequential calls: first discovers org, second reuses cache."""
+        """Two sequential calls: first discovers org, second reuses returned uuid."""
         usage_response = (200, {
             "five_hour": {"utilization": 30, "resets_at": None},
             "seven_day": {"utilization": 12, "resets_at": None},
@@ -326,21 +323,20 @@ class TestOrgUuidCaching(unittest.TestCase):
             usage_response,
         ]
 
-        fetch_quota("sk-ant-test")
-        fetch_quota("sk-ant-test")
+        result1, org_uuid1 = fetch_quota("sk-ant-test")
+        result2, org_uuid2 = fetch_quota("sk-ant-test", org_uuid=org_uuid1)
 
         # 3 calls total: orgs + usage + usage (no second org discovery)
         self.assertEqual(mock_get.call_count, 3)
         urls = [call[0][0] for call in mock_get.call_args_list]
         org_calls = [u for u in urls if "/organizations" in u and "/usage" not in u]
         self.assertEqual(len(org_calls), 1)
+        self.assertEqual(org_uuid1, "org-reuse-test")
+        self.assertEqual(org_uuid2, "org-reuse-test")
 
 
 class TestOrgUuidResetOnAuthError(unittest.TestCase):
-    """Test that _org_uuid is reset to None on 401/403 from usage endpoint."""
-
-    def setUp(self):
-        scraper._org_uuid = None
+    """Test that org_uuid is cleared on 401/403 from usage endpoint."""
 
     def _mock_http_get(self, responses):
         """Create a side_effect function for _http_get."""
@@ -353,72 +349,67 @@ class TestOrgUuidResetOnAuthError(unittest.TestCase):
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_401_on_usage_resets_org_uuid(self, mock_get):
-        """HTTP 401 on usage endpoint resets _org_uuid to None."""
+        """HTTP 401 on usage endpoint returns None org_uuid."""
         mock_get.side_effect = self._mock_http_get({
             "/organizations": (200, [{"uuid": "org-will-be-cleared"}]),
             "/usage": (401, None),
         })
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "session_key_expired")
-        self.assertIsNone(scraper._org_uuid,
-                          "_org_uuid should be None after 401 on usage endpoint")
+        self.assertIsNone(org_uuid,
+                          "org_uuid should be None after 401 on usage endpoint")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_403_on_usage_resets_org_uuid(self, mock_get):
-        """HTTP 403 on usage endpoint resets _org_uuid to None."""
+        """HTTP 403 on usage endpoint returns None org_uuid."""
         mock_get.side_effect = self._mock_http_get({
             "/organizations": (200, [{"uuid": "org-will-be-cleared"}]),
             "/usage": (403, None),
         })
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "blocked")
-        self.assertIsNone(scraper._org_uuid,
-                          "_org_uuid should be None after 403 on usage endpoint")
+        self.assertIsNone(org_uuid,
+                          "org_uuid should be None after 403 on usage endpoint")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_401_on_usage_with_precached_uuid_resets(self, mock_get):
-        """HTTP 401 on usage endpoint resets even a pre-cached _org_uuid."""
-        scraper._org_uuid = "org-pre-cached"
+        """HTTP 401 on usage endpoint clears even a pre-cached org_uuid."""
         mock_get.return_value = (401, None)
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test", org_uuid="org-pre-cached")
         self.assertEqual(result["status"], "session_key_expired")
-        self.assertIsNone(scraper._org_uuid,
-                          "_org_uuid should be None after 401 even when pre-cached")
+        self.assertIsNone(org_uuid,
+                          "org_uuid should be None after 401 even when pre-cached")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_403_on_usage_with_precached_uuid_resets(self, mock_get):
-        """HTTP 403 on usage endpoint resets even a pre-cached _org_uuid."""
-        scraper._org_uuid = "org-pre-cached"
+        """HTTP 403 on usage endpoint clears even a pre-cached org_uuid."""
         mock_get.return_value = (403, None)
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test", org_uuid="org-pre-cached")
         self.assertEqual(result["status"], "blocked")
-        self.assertIsNone(scraper._org_uuid,
-                          "_org_uuid should be None after 403 even when pre-cached")
+        self.assertIsNone(org_uuid,
+                          "org_uuid should be None after 403 even when pre-cached")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_429_on_usage_does_not_reset_org_uuid(self, mock_get):
-        """HTTP 429 on usage endpoint does NOT reset _org_uuid."""
-        scraper._org_uuid = "org-keep-this"
+        """HTTP 429 on usage endpoint does NOT clear org_uuid."""
         mock_get.return_value = (429, None)
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test", org_uuid="org-keep-this")
         self.assertEqual(result["status"], "rate_limited")
-        self.assertEqual(scraper._org_uuid, "org-keep-this",
-                         "_org_uuid should be preserved after 429")
+        self.assertEqual(org_uuid, "org-keep-this",
+                         "org_uuid should be preserved after 429")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_500_on_usage_does_not_reset_org_uuid(self, mock_get):
-        """HTTP 500 on usage endpoint does NOT reset _org_uuid."""
-        scraper._org_uuid = "org-keep-this"
+        """HTTP 500 on usage endpoint does NOT clear org_uuid."""
         mock_get.return_value = (500, None)
-        result = fetch_quota("sk-ant-test")
+        result, org_uuid = fetch_quota("sk-ant-test", org_uuid="org-keep-this")
         self.assertEqual(result["status"], "upstream_error")
-        self.assertEqual(scraper._org_uuid, "org-keep-this",
-                         "_org_uuid should be preserved after 500")
+        self.assertEqual(org_uuid, "org-keep-this",
+                         "org_uuid should be preserved after 500")
 
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_next_call_rediscovers_org_after_401_reset(self, mock_get):
-        """After 401 resets _org_uuid, next fetch_quota re-discovers the org."""
-        # First call: org discovery succeeds, usage returns 401
+        """After 401 returns None org_uuid, next fetch_quota re-discovers."""
         mock_get.side_effect = [
             (200, [{"uuid": "org-old"}]),
             (401, None),
@@ -430,15 +421,15 @@ class TestOrgUuidResetOnAuthError(unittest.TestCase):
             }),
         ]
 
-        # First call fails with 401 and resets _org_uuid
-        result1 = fetch_quota("sk-ant-test")
+        # First call fails with 401 and returns None org_uuid
+        result1, org_uuid1 = fetch_quota("sk-ant-test")
         self.assertEqual(result1["status"], "session_key_expired")
-        self.assertIsNone(scraper._org_uuid)
+        self.assertIsNone(org_uuid1)
 
-        # Second call should re-discover org (calls /organizations again)
-        result2 = fetch_quota("sk-ant-test")
+        # Second call passes None org_uuid, so re-discovers org
+        result2, org_uuid2 = fetch_quota("sk-ant-test", org_uuid=org_uuid1)
         self.assertEqual(result2["status"], "ok")
-        self.assertEqual(scraper._org_uuid, "org-new")
+        self.assertEqual(org_uuid2, "org-new")
         # Verify 4 total calls: orgs + usage(401) + orgs + usage(ok)
         self.assertEqual(mock_get.call_count, 4)
 
@@ -483,16 +474,13 @@ class TestRequestHeaders(unittest.TestCase):
 class TestNoRawExceptionTextInErrors(unittest.TestCase):
     """Verify error dicts never contain raw exception text."""
 
-    def setUp(self):
-        scraper._org_uuid = None
-
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_network_error_no_exception_text(self, mock_get):
         """Network error dicts contain no exception messages."""
         mock_get.side_effect = ConnectionError(
             "Connection refused: [Errno 111] detailed system error"
         )
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         result_str = json.dumps(result)
         self.assertNotIn("Connection refused", result_str)
         self.assertNotIn("Errno", result_str)
@@ -502,7 +490,7 @@ class TestNoRawExceptionTextInErrors(unittest.TestCase):
     def test_type_error_no_exception_text(self, mock_get):
         """TypeError in response parsing contains no exception text."""
         mock_get.side_effect = TypeError("'NoneType' object is not subscriptable")
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         result_str = json.dumps(result)
         self.assertNotIn("NoneType", result_str)
         self.assertNotIn("subscriptable", result_str)
@@ -518,9 +506,8 @@ class TestNoRawExceptionTextInErrors(unittest.TestCase):
             "no_key",
         }
         for http_status in [401, 403, 429, 500, 502, 503]:
-            scraper._org_uuid = None
             mock_get.return_value = (http_status, None)
-            result = fetch_quota("sk-ant-test")
+            result, _ = fetch_quota("sk-ant-test")
             self.assertIn(result["error"], valid_error_codes,
                           f"HTTP {http_status} produced unexpected error code: {result['error']}")
 
@@ -627,9 +614,6 @@ class TestImportVerification(unittest.TestCase):
 class TestFetchQuotaResponseContract(unittest.TestCase):
     """Verify the full bridge-format contract for successful responses."""
 
-    def setUp(self):
-        scraper._org_uuid = None
-
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_success_response_has_all_required_keys(self, mock_get):
         """Success response has status, org_uuid, five_hour, seven_day, timestamp."""
@@ -640,7 +624,7 @@ class TestFetchQuotaResponseContract(unittest.TestCase):
                 "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
             }),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         for key in ("status", "org_uuid", "five_hour", "seven_day", "timestamp"):
             self.assertIn(key, result, f"Missing key: {key}")
 
@@ -654,7 +638,7 @@ class TestFetchQuotaResponseContract(unittest.TestCase):
                 "seven_day": {"utilization": 15, "resets_at": "2026-04-07T12:00:00Z"},
             }),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertIn("utilization", result["five_hour"])
         self.assertIn("resets_at", result["five_hour"])
         self.assertIn("utilization", result["seven_day"])
@@ -671,7 +655,7 @@ class TestFetchQuotaResponseContract(unittest.TestCase):
             }),
         ]
         before = int(time.time())
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         after = int(time.time())
         self.assertGreaterEqual(result["timestamp"], before)
         self.assertLessEqual(result["timestamp"], after)
@@ -697,9 +681,6 @@ class TestErrorBridgeNoOrgUuid(unittest.TestCase):
 class TestFetchQuotaMalformedUsage(unittest.TestCase):
     """Test fetch_quota with malformed but 200 usage responses."""
 
-    def setUp(self):
-        scraper._org_uuid = None
-
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_missing_five_hour_key_returns_none_values(self, mock_get):
         """Usage response missing five_hour returns None utilization."""
@@ -707,7 +688,7 @@ class TestFetchQuotaMalformedUsage(unittest.TestCase):
             (200, [{"uuid": "org-test"}]),
             (200, {"seven_day": {"utilization": 15, "resets_at": None}}),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(result["five_hour"]["utilization"])
         self.assertIsNone(result["five_hour"]["resets_at"])
@@ -719,7 +700,7 @@ class TestFetchQuotaMalformedUsage(unittest.TestCase):
             (200, [{"uuid": "org-test"}]),
             (200, None),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         # None.get() will raise AttributeError, caught by broad except
         self.assertEqual(result["status"], "upstream_error")
 

@@ -589,15 +589,15 @@ class TestBackgroundPollThread(unittest.TestCase):
         """The poll loop performs first scrape immediately on startup."""
         server, _, _, _, _ = _make_server()
         mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = {
+        mock_fetch.return_value = ({
             "status": "ok",
             "five_hour": {"utilization": 42, "resets_at": None},
             "seven_day": {"utilization": 15, "resets_at": None},
             "timestamp": 1000,
-        }
+        }, "org-123")
         server._do_scrape()
         mock_read_key.assert_called_once_with("/tmp/k.json")
-        mock_fetch.assert_called_once_with("sk-test")
+        mock_fetch.assert_called_once_with("sk-test", None)
         self.assertIsNotNone(server._cached_data)
         self.assertTrue(server._last_scrape_ok)
 
@@ -607,7 +607,7 @@ class TestBackgroundPollThread(unittest.TestCase):
         """Session key is re-read from disk on every scrape cycle."""
         server, _, _, _, _ = _make_server()
         mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
         server._do_scrape()
         server._do_scrape()
         server._do_scrape()
@@ -642,13 +642,13 @@ class TestBackgroundPollThread(unittest.TestCase):
         """When fetch_quota returns non-ok status, _last_scrape_ok is False."""
         server, _, _, _, _ = _make_server()
         mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = {
+        mock_fetch.return_value = ({
             "status": "session_key_expired",
             "error": "session_key_expired",
             "five_hour": {"utilization": "X", "resets_at": None},
             "seven_day": {"utilization": "X", "resets_at": None},
             "timestamp": 1000,
-        }
+        }, None)
         server._do_scrape()
         self.assertFalse(server._last_scrape_ok)
 
@@ -658,7 +658,7 @@ class TestBackgroundPollThread(unittest.TestCase):
         """Poll loop scrapes immediately, then exits on shutdown."""
         server, _, _, _, _ = _make_server()
         mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
 
         original_do_scrape = server._do_scrape
         call_count = [0]
@@ -972,7 +972,7 @@ class TestReferenceSwap(unittest.TestCase):
         server, _, _, _, _ = _make_server()
         mock_read_key.return_value = {"sessionKey": "sk-test"}
         new_data = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
-        mock_fetch.return_value = new_data
+        mock_fetch.return_value = (new_data, "org-123")
         self.assertIsNone(server._cached_data)
         server._do_scrape()
         self.assertIs(server._cached_data, new_data)
@@ -991,7 +991,7 @@ class TestSigusr1TriggersOutOfCycleScrape(unittest.TestCase):
         """SIGUSR1 wakes the poll loop causing an out-of-cycle _do_scrape."""
         server, _, _, _, _ = _make_server(interval=3600)  # long interval
         mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
 
         scrape_count = [0]
         original_do_scrape = server._do_scrape
@@ -1037,22 +1037,22 @@ class TestScrapeStateTransitions(unittest.TestCase):
         mock_read_key.return_value = {"sessionKey": "sk-test"}
 
         # Scrape 1: success
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
         server._do_scrape()
         self.assertTrue(server._last_scrape_ok)
 
         # Scrape 2: error
-        mock_fetch.return_value = {
+        mock_fetch.return_value = ({
             "status": "upstream_error", "error": "upstream_error",
             "five_hour": {"utilization": "X", "resets_at": None},
             "seven_day": {"utilization": "X", "resets_at": None},
             "timestamp": 2,
-        }
+        }, "org-123")
         server._do_scrape()
         self.assertFalse(server._last_scrape_ok)
 
         # Scrape 3: success again
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 3}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 3}, "org-123")
         server._do_scrape()
         self.assertTrue(server._last_scrape_ok)
 
@@ -1068,18 +1068,18 @@ class TestScrapeStateTransitions(unittest.TestCase):
         self.assertEqual(result["status"], "error")
 
         # After successful scrape: ok
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
         server._do_scrape()
         result = json.loads(routes["/health"]())
         self.assertEqual(result["status"], "ok")
 
         # After failed scrape: degraded (has cached data but last scrape failed)
-        mock_fetch.return_value = {
+        mock_fetch.return_value = ({
             "status": "upstream_error", "error": "upstream_error",
             "five_hour": {"utilization": "X", "resets_at": None},
             "seven_day": {"utilization": "X", "resets_at": None},
             "timestamp": 2,
-        }
+        }, "org-123")
         server._do_scrape()
         result = json.loads(routes["/health"]())
         self.assertEqual(result["status"], "degraded")
@@ -1317,7 +1317,7 @@ class TestKeyRotationSupport(unittest.TestCase):
             {"sessionKey": "sk-first-key"},
             {"sessionKey": "sk-rotated-key"},
         ]
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
 
         server._do_scrape()
         server._do_scrape()
@@ -1337,7 +1337,7 @@ class TestKeyRotationSupport(unittest.TestCase):
             {"error": "no_key"},  # key file missing during rotation
             {"sessionKey": "sk-new"},
         ]
-        mock_fetch.return_value = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
+        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
 
         server._do_scrape()
         self.assertTrue(server._last_scrape_ok)
@@ -1584,13 +1584,11 @@ class TestRendererNoneUtilizationGuard(unittest.TestCase):
     def test_none_utilization_in_success_response(self, mock_get):
         """fetch_quota returns None utilization when upstream data is missing."""
         from tmux_status_server.scraper import fetch_quota as _fq
-        from tmux_status_server import scraper as _s
-        _s._org_uuid = None
         mock_get.side_effect = [
             (200, [{"uuid": "org-test"}]),
             (200, {}),  # no five_hour or seven_day
         ]
-        result = _fq("sk-test")
+        result, _ = _fq("sk-test")
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(result["five_hour"]["utilization"])
         self.assertIsNone(result["seven_day"]["utilization"])

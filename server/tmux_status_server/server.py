@@ -48,6 +48,7 @@ class QuotaServer:
         self._shutdown = threading.Event()
         self._wake = threading.Event()
         self._api_key = None
+        self._org_uuid = None
         self._poll_thread = None
 
         self._app = self._create_app()
@@ -138,7 +139,7 @@ class QuotaServer:
 
         session_key = key_data["sessionKey"]
         try:
-            result = fetch_quota(session_key)
+            result, self._org_uuid = fetch_quota(session_key, self._org_uuid)
             self._cached_data = result
             if result.get("status") == "ok":
                 self._last_scrape_ok = True

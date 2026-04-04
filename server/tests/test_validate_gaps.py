@@ -461,15 +461,11 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
 class TestFetchQuotaImportError(unittest.TestCase):
     """Test fetch_quota when curl_cffi is not installed."""
 
-    def setUp(self):
-        scraper._org_uuid = None
-
     def test_import_error_returns_upstream_error(self):
         """When curl_cffi import fails, fetch_quota returns upstream_error."""
-        # Simulate ImportError by mocking _http_get to raise ImportError
         with mock.patch("tmux_status_server.scraper._http_get",
                         side_effect=ImportError("No module named 'curl_cffi'")):
-            result = fetch_quota("sk-ant-test")
+            result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "upstream_error")
         self.assertEqual(result["error"], "upstream_error")
         self.assertEqual(result["five_hour"]["utilization"], "X")
@@ -695,9 +691,6 @@ class TestReadSessionKeyUnicode(unittest.TestCase):
 class TestFetchQuotaMissingWindowKeys(unittest.TestCase):
     """Test fetch_quota handles partial/missing window data gracefully."""
 
-    def setUp(self):
-        scraper._org_uuid = None
-
     @mock.patch("tmux_status_server.scraper._http_get")
     def test_empty_usage_response_returns_none_values(self, mock_get):
         """Completely empty usage body returns None for all window values."""
@@ -705,7 +698,7 @@ class TestFetchQuotaMissingWindowKeys(unittest.TestCase):
             (200, [{"uuid": "org-test"}]),
             (200, {}),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(result["five_hour"]["utilization"])
         self.assertIsNone(result["five_hour"]["resets_at"])
@@ -722,7 +715,7 @@ class TestFetchQuotaMissingWindowKeys(unittest.TestCase):
                 "seven_day": {"utilization": 15},
             }),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["five_hour"]["utilization"], 42)
         self.assertIsNone(result["five_hour"]["resets_at"])
@@ -737,7 +730,7 @@ class TestFetchQuotaMissingWindowKeys(unittest.TestCase):
                 "seven_day": None,
             }),
         ]
-        result = fetch_quota("sk-ant-test")
+        result, _ = fetch_quota("sk-ant-test")
         self.assertEqual(result["status"], "ok")
         # None.get() would fail, so this should handle gracefully via or {}
         self.assertIsNone(result["five_hour"]["utilization"])
