@@ -153,10 +153,10 @@ if grep -qF "$SOURCE_MARKER" "$TMUX_CONF" 2>/dev/null; then
 else
     # Ensure file ends with a newline before appending
     [ -s "$TMUX_CONF" ] && [ "$(tail -c1 "$TMUX_CONF" | xxd -p)" != "0a" ] && echo "" >> "$TMUX_CONF"
-    cat >> "$TMUX_CONF" << 'TMUXLINE'
+    cat >> "$TMUX_CONF" << TMUXLINE
 
 # tmux-status: 3-line status bar (https://github.com/mikeydotio/tmux-status)
-source-file ~/projects/tmux-status/overlay/status.conf
+source-file $INSTALL_DIR/overlay/status.conf
 TMUXLINE
     ok "Added source line to $TMUX_CONF"
 fi
