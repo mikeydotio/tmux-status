@@ -1,0 +1,63 @@
+{
+  "plan_hash": "1b1d03df92dd69b708ef66b28a07cf15",
+  "project_story": "TS-14",
+  "fix_cycle": 1,
+  "stories": {
+    "TS-15": {
+      "task_ref": "Task 1.1",
+      "wave": 1,
+      "title": "Fix pyproject.toml build backend",
+      "acceptance_criteria": "server/pyproject.toml contains build-backend = \"setuptools.build_meta\" and pip install server/ succeeds",
+      "design_section": "## Components\n\n### tmux-status-server (new package)\n\n- **Purpose:** Scrape claude.ai for quota data and serve it via HTTP REST API\n- **Interfaces:** `GET /quota`, `GET /health` on configurable host:port (default `127.0.0.1:7850`)\n- **Dependencies:** `bottle>=0.12.25`, `curl_cffi>=0.5`, Python `>=3.10`\n- **Key decisions:** Server is the canonical owner of all scraping logic.",
+      "files_expected": ["server/pyproject.toml"]
+    },
+    "TS-16": {
+      "task_ref": "Task 1.2",
+      "wave": 1,
+      "title": "Fix launchd plist tilde expansion",
+      "acceptance_criteria": "Installed plist contains absolute paths like /Users/foo/.local/bin/tmux-status-server instead of ~/.local/bin/tmux-status-server. Template plist at server/deploy/io.mikey.tmux-status-server.plist is NOT modified. Existing test_deploy.py tests still pass.",
+      "design_section": "### Daemon Installation\n\n`install.sh` detects the platform and installs the appropriate daemon configuration.\n\n**macOS (launchd plist):** Template uses `~/.local/bin/tmux-status-server`. launchd does not expand `~`, so install.sh must substitute absolute paths using `$HOME` during installation.\n\n**Risks section (from DESIGN.md):** \"Use absolute path with `$HOME` substitution during install.\"",
+      "files_expected": ["install.sh"]
+    },
+    "TS-17": {
+      "task_ref": "Task 1.3",
+      "wave": 1,
+      "title": "Fix renderer status fallthrough",
+      "acceptance_criteria": "When bridge file has status other than \"ok\", \"error\", or \"none\", renderer outputs QUOTA_5H_PCT='X' and QUOTA_7D_PCT='X' instead of 0",
+      "design_section": "### Error Signaling\n\nWhen the server encounters an error condition, it returns the response with \"X\" string values for utilization instead of numbers. The renderer displays these as-is (e.g., X%), signaling to the user that something is wrong.\n\nServer conditions returning \"X\": expired, blocked, rate_limited, no_key, upstream_error, starting.\n\nThe renderer must handle ALL non-\"ok\" statuses by showing \"X\" — not just \"error\".",
+      "files_expected": ["scripts/tmux-claude-status"]
+    },
+    "TS-18": {
+      "task_ref": "Task 1.4",
+      "wave": 1,
+      "title": "Fix Dockerfile default bind address",
+      "acceptance_criteria": "server/Dockerfile has both ENTRYPOINT [\"tmux-status-server\"] and CMD [\"--host\", \"0.0.0.0\"]. Test in test_deploy.py verifies CMD line.",
+      "design_section": "### Network Exposure\n\n1. **Default bind `127.0.0.1`:** Server only accessible locally unless explicitly configured with `--host`.\n\nFor Docker deployments, the container must bind to 0.0.0.0 for port mapping to work. The Dockerfile should use CMD to provide default args, overridable at runtime.",
+      "files_expected": ["server/Dockerfile", "server/tests/test_deploy.py"]
+    },
+    "TS-19": {
+      "task_ref": "Task 1.5",
+      "wave": 1,
+      "title": "Fix install.sh hardcoded path",
+      "acceptance_criteria": "The source-file line written to tmux.conf uses the value of $INSTALL_DIR, not a hardcoded path. grep -F 'INSTALL_DIR' install.sh matches the heredoc line.",
+      "design_section": "### install.sh (modified)\n\n- **Purpose:** Install tmux-status including the server package and platform-specific daemon\n- **Key decisions:** The INSTALL_DIR variable already exists and is set correctly. The heredoc must use unquoted delimiter to allow variable expansion.",
+      "files_expected": ["install.sh"]
+    },
+    "TS-20": {
+      "task_ref": "Task 1.6",
+      "wave": 1,
+      "title": "Expand warn_if_exposed safe addresses",
+      "acceptance_criteria": "warn_if_exposed does NOT log a warning when host is \"localhost\" or \"::1\" (with no api_key_file). It still warns for \"0.0.0.0\". Tests in test_config.py cover localhost and ::1.",
+      "design_section": "### Network Exposure\n\n2. **Startup warning:** When binding to non-localhost without `--api-key-file`, log: `WARNING: Listening on 0.0.0.0:7850 with NO authentication.`\n\nThe safe address check should include all common loopback addresses: 127.0.0.1, localhost, ::1.",
+      "files_expected": ["server/tmux_status_server/config.py", "server/tests/test_config.py"]
+    },
+    "TS-21": {
+      "task_ref": "Task 1.7",
+      "wave": 1,
+      "title": "Reset stale org UUID on auth errors",
+      "acceptance_criteria": "After a 401/403 from the usage endpoint, _org_uuid is None so the next fetch_quota() call re-discovers the org. Test in test_scraper.py verifies _org_uuid is reset on 401/403.",
+      "design_section": "### Server Scrape Cycle\n\nScraper discovers org UUID (cached after first discovery). If the session key expires or changes, the cached org UUID must be cleared to force re-discovery on the next cycle. Reset _org_uuid = None when 401/403 received from usage endpoint.",
+      "files_expected": ["server/tmux_status_server/scraper.py", "server/tests/test_scraper.py"]
+    }
+  }
+}

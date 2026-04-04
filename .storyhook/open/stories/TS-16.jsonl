@@ -1,0 +1,4 @@
+{"kind":"StoryCreated","at":"2026-04-04T01:09:54Z","title":"T1.2: Fix launchd plist tilde expansion — In `install.sh`, after copying the launchd plist, run sed to replace `~` with `$HOME` before `launchctl load`. Do NOT modify template plist or its tests. Acceptance: installed plist contains absolute paths. Files: `install.sh`","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T01:09:54Z","priority":"critical"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T01:09:54Z","labels":["fix-cycle-1","phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T01:09:54Z","other_id":"TS-14","relation":"child-of"}

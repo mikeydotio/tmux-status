@@ -1,0 +1,4 @@
+{"kind":"StoryCreated","at":"2026-04-04T01:09:54Z","title":"T1.1: Fix pyproject.toml build backend — Change `build-backend` from `\"setuptools.backends._legacy:_Backend\"` to `\"setuptools.build_meta\"` in `server/pyproject.toml`. Acceptance: `server/pyproject.toml` contains `build-backend = \"setuptools.build_meta\"` and `pip install server/` succeeds. Files: `server/pyproject.toml`","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T01:09:54Z","priority":"critical"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T01:09:54Z","labels":["fix-cycle-1","phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T01:09:54Z","other_id":"TS-14","relation":"child-of"}
