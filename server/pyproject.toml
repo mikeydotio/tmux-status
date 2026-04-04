@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmux-status-server"
@@ -11,6 +11,9 @@ dependencies = [
     "bottle>=0.12.25",
     "curl_cffi>=0.5",
 ]
+
+[tool.setuptools.packages.find]
+include = ["tmux_status_server*"]
 
 [project.scripts]
 tmux-status-server = "tmux_status_server.__main__:main"
