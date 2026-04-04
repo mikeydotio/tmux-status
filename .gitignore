@@ -8,3 +8,9 @@ claude-usage-key.json
 __pycache__/
 *.pyc
 *.egg-info/
+server/build/
+
+# Forge runtime
+.forge/state.json
+.forge/lock.json
+.forge/verdicts.jsonl
