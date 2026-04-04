@@ -1,4 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-04T01:09:54Z","title":"T1.6: Expand warn_if_exposed safe addresses — Check `args.host not in (\"127.0.0.1\", \"localhost\", \"::1\")` in config.py. Update tests. Acceptance: no warning for localhost or ::1. Files: `server/tmux_status_server/config.py`, `server/tests/test_config.py`","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-04T01:09:54Z","priority":"medium"}
-{"kind":"StoryLabelsSet","at":"2026-04-04T01:09:54Z","labels":["fix-cycle-1","phase:1"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T01:09:54Z","other_id":"TS-14","relation":"child-of"}

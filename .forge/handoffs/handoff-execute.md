@@ -1,27 +1,33 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-fix1-004
-- **Stories completed**: 1 (TS-18)
-- **Stories attempted**: 1
-- **Status**: Session limit reached (1/1 stories per session)
+- **Session**: session-fix1-005
+- **Stories completed**: 3 (TS-19, TS-20, TS-21)
+- **Stories attempted**: 3
+- **Status**: Fix cycle 1 complete — all 7 fix stories done
 
 ## What Happened
-Fix cycle 1, session 4. Implemented TS-18 (Dockerfile default bind address). Added `CMD ["--host", "0.0.0.0"]` after `ENTRYPOINT ["tmux-status-server"]` in `server/Dockerfile`. Added `TestDockerfileCmd` test class in `test_deploy.py` with 3 tests: cmd_present, cmd_binds_all_interfaces, cmd_after_entrypoint.
+Fix cycle 1, session 5 (final). Completed the remaining 3 stories:
+- TS-19: Unquoted heredoc delimiter in install.sh so $INSTALL_DIR expands
+- TS-21: Reset _org_uuid to None on 401/403 from usage endpoint
+- TS-20: Expanded warn_if_exposed safe addresses to include localhost and ::1
 
-Also recovered TS-16 and TS-17 storyhook state — both were committed in prior sessions but storyhook state wasn't synced (TS-16 stuck in verifying, TS-17 stuck in todo).
+Also synced TS-16 and TS-17 storyhook state to done (both were committed in prior sessions but state was stale).
 
-## Stories Completed This Session
-- TS-18: Fix Dockerfile default bind address — added CMD and test class
+## Fix Cycle 1 Complete Summary
+All 7 fix stories from TRIAGE.md FIX items are done:
+- TS-15: Fixed pyproject.toml build backend (session 1)
+- TS-16: Fixed launchd plist tilde expansion (session 2)
+- TS-17: Fixed renderer status fallthrough (session 3)
+- TS-18: Fixed Dockerfile default bind address (session 4)
+- TS-19: Fixed install.sh hardcoded path (this session)
+- TS-20: Expanded warn_if_exposed safe addresses (this session)
+- TS-21: Reset stale org UUID on auth errors (this session)
 
-## Fix Cycle 1 Progress
-- TS-15: Done (session 1) — pyproject.toml build backend
-- TS-16: Done (session 2, state recovered session 4) — launchd plist tilde expansion
-- TS-17: Done (session 3, state recovered session 4) — renderer status fallthrough
-- TS-18: Done (this session) — Dockerfile bind address
-- TS-19: Todo — install.sh hardcoded path
-- TS-20: Todo — warn_if_exposed safe addresses
-- TS-21: Todo — stale org UUID on auth errors
+## ESCALATE Stories (Still Open)
+- TS-11: QUOTA_API_KEY stored in plaintext in settings.conf
+- TS-12: __main__.py unused imports (parse_args, warn_if_exposed)
+- TS-13: Scraper module-level _org_uuid global state
 
 ## Current Blockers
 None.
@@ -29,46 +35,21 @@ None.
 ## Working Context
 
 ### Patterns Established
-- Config module uses module-level constants for defaults (DEFAULT_HOST, DEFAULT_PORT, etc.)
-- Scraper module uses module-level `_org_uuid` cache variable
-- Tilde expansion via `os.path.expanduser()` applied post-parse, not in defaults
-- Warning function is a separate callable (`warn_if_exposed(args)`)
-- Tests use `sys.path.insert` to import from `server/tmux_status_server/`
-- Test files use unittest-style classes under pytest
-- Shell scripts use `2>/dev/null || true` for silent failure on optional commands
-- OS detection uses `uname -s` checking for "Linux" and "Darwin"
-- pip3 used with fallback to pip; pip3 uninstall uses `-y` flag
-- pyproject.toml uses `[tool.setuptools.packages.find]` with explicit include
-- macOS sed uses `sed -i ''` (BSD syntax with explicit empty backup extension)
-- launchd plist sed uses pipe `|` delimiter to avoid conflicts with `/` in paths
-- Embedded Python in tmux-claude-status uses `if/elif/else` chain for quota_status handling
-- Downstream bash `bar_char()` handles non-numeric "X" with red error indicator
-- `fmt_quota_pct()` passes "X" through without appending "%"
-- Dockerfile uses ENTRYPOINT for the binary, CMD for default args (Docker exec form)
-
-### Micro-Decisions
-- Added packages.find section to pyproject.toml to prevent setuptools flat-layout picking up `deploy/` directory
-- launchd sed specifically matches `~/.local/bin/tmux-status-server` rather than a generic `~` replacement to avoid unintended substitutions
-- The else clause for status fallthrough does NOT read reset times (unlike the "error" branch)
-- CMD uses JSON exec form `["--host", "0.0.0.0"]` for proper signal handling in Docker
-
-### Code Landmarks
-- `server/pyproject.toml` — Package metadata, deps, console script entry point, packages.find section
-- `server/tmux_status_server/config.py` — CLI arg parsing and network exposure warning
-- `server/tmux_status_server/scraper.py` — Session key reading and quota fetching
-- `server/tmux_status_server/server.py` — QuotaServer class, HTTP endpoints, auth, polling
-- `server/Dockerfile` — ENTRYPOINT + CMD, binds 0.0.0.0 by default
-- `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing, quota status handling (lines 186-204)
-- `install.sh` — Installer with server pip install, daemon setup, launchd sed fix
-- `uninstall.sh` — Uninstaller with daemon teardown
+- Config module uses `not in (tuple)` for safe address checks
+- Scraper resets _org_uuid on auth errors (401/403) but not on rate limit (429) or server errors (500)
+- install.sh heredoc uses unquoted delimiter for variable expansion
+- Tests follow sentinel pattern for asserting "no warning logged"
+- All test files use `sys.path.insert(0, ...)` for imports
 
 ### Test State
-- 226 tests pass: `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -q`
+- 235 tests pass: `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -q`
 - No flaky tests
-- Test files: test_config.py, test_scraper.py, test_package.py, test_server.py, test_deploy.py
+- Test files: test_config.py (31), test_scraper.py (52), test_package.py, test_server.py, test_deploy.py
+
+### Archived Artifacts
+- Fix cycle 0 artifacts in .forge/fix-cycles/cycle-0/ (original TRIAGE.md, PLAN.md, plan-mapping.json)
+- Fix cycle 1 artifacts in .forge/fix-cycles/cycle-1/ (TRIAGE.md, REVIEW-REPORT.md, VALIDATE-REPORT.md, PLAN.md, plan-mapping.json)
 
 ## What's Next
-- TS-19: Fix install.sh hardcoded path — unquoted heredoc delimiter for variable expansion
-- TS-20: Expand warn_if_exposed safe addresses — add localhost, ::1
-- TS-21: Reset stale org UUID on auth errors
-- 3 fix stories remaining, all independent (wave 1)
+- Pipeline should proceed to review+validate pass on the full codebase
+- 3 ESCALATE stories remain for user review after document step
