@@ -1,55 +1,45 @@
-# Work Handoff
+# Handoff: Execute (Fix Cycle 2, Session 16)
 
-## Session Summary
-- **Session**: session-fix1-005
-- **Stories completed**: 3 (TS-19, TS-20, TS-21)
-- **Stories attempted**: 3
-- **Status**: Fix cycle 1 complete — all 7 fix stories done
+## Context
 
-## What Happened
-Fix cycle 1, session 5 (final). Completed the remaining 3 stories:
-- TS-19: Unquoted heredoc delimiter in install.sh so $INSTALL_DIR expands
-- TS-21: Reset _org_uuid to None on 401/403 from usage endpoint
-- TS-20: Expanded warn_if_exposed safe addresses to include localhost and ::1
+Fix cycle 2 execution in progress. 1 of 4 task stories completed this session. Pausing due to session limit (max_stories_per_session=1).
 
-Also synced TS-16 and TS-17 storyhook state to done (both were committed in prior sessions but state was stale).
+## Stories Completed This Session
 
-## Fix Cycle 1 Complete Summary
-All 7 fix stories from TRIAGE.md FIX items are done:
-- TS-15: Fixed pyproject.toml build backend (session 1)
-- TS-16: Fixed launchd plist tilde expansion (session 2)
-- TS-17: Fixed renderer status fallthrough (session 3)
-- TS-18: Fixed Dockerfile default bind address (session 4)
-- TS-19: Fixed install.sh hardcoded path (this session)
-- TS-20: Expanded warn_if_exposed safe addresses (this session)
-- TS-21: Reset stale org UUID on auth errors (this session)
+- **TS-26** (critical, wave 1): Fix auth bypass — replaced `return json.dumps(...)` with `abort(401, ...)` in check_auth hook. Updated 8 auth tests across test_server.py and test_validate_gaps.py. 292 tests passing. Commit: `5ab8f34`.
 
-## ESCALATE Stories (Still Open)
-- TS-11: QUOTA_API_KEY stored in plaintext in settings.conf
-- TS-12: __main__.py unused imports (parse_args, warn_if_exposed)
-- TS-13: Scraper module-level _org_uuid global state
+## Remaining Stories
 
-## Current Blockers
-None.
+- **TS-27** (critical, wave 1, todo): Fix empty API key file — `_load_api_key()` returns None for empty/whitespace files. Files: server.py, test_server.py, test_validate_gaps.py.
+- **TS-28** (high, wave 1, todo): Renderer None utilization guard — add `is None or` guard at lines 189, 193 of tmux-claude-status.
+- **TS-29** (high, wave 2, todo): Auth WSGI integration tests — webtest.TestApp proof. Blocked by TS-26 (done), TS-27, TS-28.
 
-## Working Context
+## Cold-Start Essentials
 
 ### Patterns Established
-- Config module uses `not in (tuple)` for safe address checks
-- Scraper resets _org_uuid on auth errors (401/403) but not on rate limit (429) or server errors (500)
-- install.sh heredoc uses unquoted delimiter for variable expansion
-- Tests follow sentinel pattern for asserting "no warning logged"
-- All test files use `sys.path.insert(0, ...)` for imports
+
+- Auth tests use `mb.abort.assert_called_once()` + `mb.abort.call_args[0]` to verify abort was called with `(401, json_body)`. This pattern was applied consistently across test_server.py and test_validate_gaps.py.
+- Mock Bottle's `abort` is a MagicMock that doesn't raise — tests verify it was called rather than catching exceptions.
+
+### Micro-Decisions
+
+- test_validate_gaps.py tests for TestAuthSecurityEdgeCases were updated in the same pattern as test_server.py tests, even though they weren't in the TS-26 `files_expected` list. This was necessary because those tests directly exercise the check_auth hook.
+
+### Code Landmarks
+
+- `server/tmux_status_server/server.py:74-82` — check_auth hook (the fix location)
+- `server/tests/test_server.py:518-574` — TestAuthHook class
+- `server/tests/test_validate_gaps.py:399-473` — TestAuthSecurityEdgeCases class
 
 ### Test State
-- 235 tests pass: `source ~/.venv/bin/activate && python3 -m pytest server/tests/ -q`
-- No flaky tests
-- Test files: test_config.py (31), test_scraper.py (52), test_package.py, test_server.py, test_deploy.py
 
-### Archived Artifacts
-- Fix cycle 0 artifacts in .forge/fix-cycles/cycle-0/ (original TRIAGE.md, PLAN.md, plan-mapping.json)
-- Fix cycle 1 artifacts in .forge/fix-cycles/cycle-1/ (TRIAGE.md, REVIEW-REPORT.md, VALIDATE-REPORT.md, PLAN.md, plan-mapping.json)
+- **292 tests passing**, 0 failures, 0 flaky
+- Run command: `python3 -m pytest server/tests/ -v`
+- No special env setup needed
 
-## What's Next
-- Pipeline should proceed to review+validate pass on the full codebase
-- 3 ESCALATE stories remain for user review after document step
+## Pipeline State
+
+- Fix cycle: 2 / 3 (max)
+- ESCALATE stories pending: 5 (TS-11, TS-12, TS-13, TS-22, TS-23)
+- Stories completed this cycle: 1 (TS-26)
+- Stories remaining this cycle: 3 (TS-27, TS-28, TS-29)
