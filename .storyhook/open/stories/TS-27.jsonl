@@ -4,3 +4,5 @@
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-25","relation":"child-of"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-29","relation":"blocks"}
 {"kind":"StoryCommentAdded","at":"2026-04-04T02:38:12Z","text":"Acceptance: (1) _load_api_key() returns None for empty/whitespace-only key files. (2) logger.warning is called when empty key detected. (3) Update test_empty_api_key_file_returns_empty_string and test_whitespace_only_api_key_file_returns_empty_string — change assertions from == \"\" to is None. (4) Update TestEmptyApiKeySecurityFinding tests in test_validate_gaps.py to reflect new behavior."}
+{"kind":"StoryStateChanged","at":"2026-04-04T02:47:26Z","state":"in-progress"}
+{"kind":"StoryStateChanged","at":"2026-04-04T02:49:39Z","state":"verifying"}

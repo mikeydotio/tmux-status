@@ -58,7 +58,11 @@ class QuotaServer:
             return None
         try:
             with open(self.api_key_file) as f:
-                return f.read().strip()
+                key = f.read().strip()
+            if not key:
+                logger.warning("API key file is empty: %s", self.api_key_file)
+                return None
+            return key
         except OSError:
             logger.warning("Could not read API key file: %s", self.api_key_file)
             return None

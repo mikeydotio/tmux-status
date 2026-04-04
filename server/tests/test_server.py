@@ -1084,27 +1084,27 @@ class TestScrapeStateTransitions(unittest.TestCase):
 class TestApiKeyEdgeCases(unittest.TestCase):
     """Test edge cases in API key loading."""
 
-    def test_empty_api_key_file_returns_empty_string(self):
-        """An empty API key file returns empty string (falsy after strip)."""
+    def test_empty_api_key_file_returns_none(self):
+        """An empty API key file returns None to prevent auth bypass."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
             f.write("")
             key_path = f.name
         try:
             server, _, _, _, _ = _make_server(api_key_file=key_path)
             result = server._load_api_key()
-            self.assertEqual(result, "")
+            self.assertIsNone(result)
         finally:
             os.unlink(key_path)
 
-    def test_whitespace_only_api_key_file_returns_empty_string(self):
-        """A whitespace-only API key file returns empty string after strip."""
+    def test_whitespace_only_api_key_file_returns_none(self):
+        """A whitespace-only API key file returns None to prevent auth bypass."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
             f.write("   \n  \n")
             key_path = f.name
         try:
             server, _, _, _, _ = _make_server(api_key_file=key_path)
             result = server._load_api_key()
-            self.assertEqual(result, "")
+            self.assertIsNone(result)
         finally:
             os.unlink(key_path)
 
