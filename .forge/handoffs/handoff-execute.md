@@ -1,20 +1,20 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-fix1-001
-- **Stories completed**: 1 (TS-15)
+- **Session**: session-fix1-002
+- **Stories completed**: 1 (TS-16)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Fix cycle 1, session 1. Implemented TS-15 (pyproject.toml build backend fix). Changed build-backend from `setuptools.backends._legacy:_Backend` to `setuptools.build_meta`. Also added `[tool.setuptools.packages.find]` section to explicitly include only `tmux_status_server*` packages (setuptools flat-layout discovery was picking up the `deploy` directory). Passed evaluation on first attempt.
+Fix cycle 1, session 2. Implemented TS-16 (launchd plist tilde expansion fix). Added `sed -i ''` command after `cp` in the Darwin section of install.sh to replace `~` with `$HOME` in the installed plist. Template plist untouched. Also fixed storyhook state for TS-15 which was reverted by git checkout, and added gitignore entries for server/build/ and forge runtime files (state.json, lock.json, verdicts.jsonl).
 
 ## Stories Completed This Session
-- TS-15: Fix pyproject.toml build backend — changed build-backend to `setuptools.build_meta`, added packages.find section
+- TS-16: Fix launchd plist tilde expansion — added sed substitution in install.sh Darwin section
 
 ## Fix Cycle 1 Progress
-- TS-15: Done (this session) — pyproject.toml build backend
-- TS-16: Todo — launchd plist tilde expansion
+- TS-15: Done (session 1) — pyproject.toml build backend
+- TS-16: Done (this session) — launchd plist tilde expansion
 - TS-17: Todo — renderer status fallthrough
 - TS-18: Todo — Dockerfile bind address
 - TS-19: Todo — install.sh hardcoded path
@@ -37,9 +37,13 @@ None.
 - OS detection uses `uname -s` checking for "Linux" and "Darwin"
 - pip3 used with fallback to pip; pip3 uninstall uses `-y` flag
 - pyproject.toml now uses `[tool.setuptools.packages.find]` with explicit include
+- macOS sed uses `sed -i ''` (BSD syntax with explicit empty backup extension)
+- launchd plist sed uses pipe `|` delimiter to avoid conflicts with `/` in paths
 
 ### Micro-Decisions
 - Added packages.find section to pyproject.toml to prevent setuptools flat-layout picking up `deploy/` directory
+- launchd sed specifically matches `~/.local/bin/tmux-status-server` rather than a generic `~` replacement to avoid unintended substitutions
+- Added .gitignore entries for `server/build/`, `.forge/state.json`, `.forge/lock.json`, `.forge/verdicts.jsonl`
 
 ### Code Landmarks
 - `server/pyproject.toml` — Package metadata, deps, console script entry point, packages.find section
@@ -47,7 +51,7 @@ None.
 - `server/tmux_status_server/scraper.py` — Session key reading and quota fetching
 - `server/tmux_status_server/server.py` — QuotaServer class, HTTP endpoints, auth, polling
 - `scripts/tmux-claude-status` — Renderer with HTTP fetch, settings parsing
-- `install.sh` — Installer with server pip install, daemon setup
+- `install.sh` — Installer with server pip install, daemon setup, launchd sed fix
 - `uninstall.sh` — Uninstaller with daemon teardown
 
 ### Test State
@@ -56,5 +60,5 @@ None.
 - Test files: test_config.py, test_scraper.py, test_package.py, test_server.py, test_deploy.py
 
 ## What's Next
-- TS-16: Fix launchd plist tilde expansion in install.sh
-- 6 fix stories remaining, all independent (wave 1)
+- TS-17: Fix renderer status fallthrough in scripts/tmux-claude-status
+- 5 fix stories remaining, all independent (wave 1)
