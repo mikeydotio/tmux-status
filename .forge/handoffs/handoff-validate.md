@@ -1,41 +1,41 @@
-# Handoff: Validate -> Triage (Pass 2)
+# Handoff: validate -> orchestrator (Fix Cycle 2)
 
 ## Summary
-Test suite hardened from 235 to 292 tests (57 new in `test_validate_gaps.py`), all passing in 6.39s. Three findings identified: 1 Critical, 1 Important, 1 Known (TS-13).
+Validation pass for fix cycle 2 complete. Suite expanded from 299 to 309 tests, all passing in 6.45s.
 
-## Key Decisions
+## What was done
+1. Ran full test suite: 299 tests passing, 0 failures (baseline).
+2. Analyzed coverage of all 9 IDEA.md requirements and all 4 fix cycle 2 stories (TS-26 through TS-29).
+3. Identified 3 coverage gaps and wrote 10 new tests to fill them:
+   - **TS-26 regression**: WSGI proof that abort(401) prevents route execution (data never leaks)
+   - **TS-27 regression**: WSGI proof that empty-string key bypass is neutralized by _load_api_key() returning None
+   - **TS-28 contract**: Server-side tests that None utilization flows through fetch_quota and /quota endpoint
+   - **TS-29 extension**: Exhaustive WSGI tests for unknown paths, /health non-leakage, and 401 JSON format
+4. Re-ran suite: 309 tests passing, 0 failures.
 
-1. **Client `_maybe_fetch_quota` tested via re-implementation**: The function is embedded in a bash/python polyglot script and cannot be imported. Tests use a re-implementation that matches the logic. Drift risk documented as FINDING-2.
+## Key findings
+- No critical findings. All fix cycle 2 changes are well-tested.
+- One useful observation: empty-string `_api_key` is not blocked at the hmac layer (defense-in-depth gap), but the `_load_api_key()` fix makes this unreachable in practice.
+- Renderer None guard (TS-28) is in a shell script and can only be tested structurally, not via unit tests. Server contract is tested.
 
-2. **Real HTTP server for client tests**: All client integration tests use `http.server.HTTPServer` — no urllib mocking. This catches real HTTP behavior.
-
-3. **Empty API key bypass confirmed**: `hmac.compare_digest("", "")` returns True. Test documents this as a security finding.
-
-4. **All test files verified independently**: Each test file passes in isolation (no order dependencies).
-
-## Findings for Triage
-
-| # | Title | Severity | Action |
-|---|-------|----------|--------|
-| 1 | Empty API key file creates auth bypass | Critical | `_load_api_key` should return None for empty keys |
-| 2 | Client _maybe_fetch_quota embedded in shell script | Important | Extract to importable module |
-| 3 | Module-level _org_uuid global state | Important | Already tracked as TS-13 |
+## Files modified
+- `server/tests/test_server.py` -- Added 10 new tests in 3 new test classes at end of file
 
 ## Test Counts
 
 | File | Count | Notes |
 |------|-------|-------|
-| test_config.py | 31 | Unchanged from pass 1 |
-| test_scraper.py | 52 | Unchanged from pass 1 |
+| test_config.py | 31 | Unchanged |
+| test_scraper.py | 52 | Unchanged |
 | test_package.py | existing | Unchanged |
-| test_server.py | existing | Unchanged |
+| test_server.py | existing + 10 | 3 new test classes for fix cycle 2 |
 | test_deploy.py | existing | Unchanged |
-| **test_validate_gaps.py** | **57** | **NEW — client integration, security, edge cases** |
-| **Total** | **292** | All passing |
+| test_validate_gaps.py | 57 | Unchanged |
+| **Total** | **309** | All passing |
 
-## Mock Audit
-All mocks target external dependencies (curl_cffi, bottle, OS signals). New client tests use real HTTP server — no mocks.
+## No escalations
+All findings are severity Useful. No new Critical or Important issues found.
 
 ## Artifacts
-- `.forge/VALIDATE-REPORT.md` — full report with requirement coverage matrix
-- `server/tests/test_validate_gaps.py` — 57 new tests
+- `.forge/VALIDATE-REPORT.md` -- full report with requirement coverage matrix
+- `server/tests/test_server.py` -- 10 new tests added

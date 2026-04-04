@@ -1,35 +1,33 @@
-# Handoff: Review -> Triage (Pass 2)
+# Handoff: Review (Fix Cycle 2)
 
-## Context
+## What Was Done
 
-Second static analysis review after fix cycle 1 resolved 7 findings from the first review. Review performed against DESIGN.md, IDEA.md, and all implementation files. 292 tests now pass.
+Performed comprehensive static analysis of the tmux-status quota data server codebase after fix cycle 2 (TS-26 through TS-29). Reviewed all server modules, client renderer, test files, deployment artifacts, and install/uninstall scripts. Verified 299 tests pass with 0 failures.
 
-## Key Decisions for Triage
+## Key Outcomes
 
-### Critical (2 findings)
+- **Design alignment: ALIGNED** — No drift from DESIGN.md. All fix cycle 2 changes match the specification.
+- **3 findings** — all Useful severity. No Critical or Important findings remain after fix cycle 2.
+- **All 4 fix cycle 2 stories verified** — TS-26, TS-27, TS-28, TS-29 all properly implemented, passing verdicts, archived as done.
 
-1. **API key auth is completely bypassed** (`server/tmux_status_server/server.py:74-84`): Bottle's `before_request` hooks discard return values — the route handler always executes regardless. Auth check returns 401 JSON but the route overwrites it with real quota data. Fix: use `abort(401)` instead of `return` (one-line change, `abort` already imported).
+## Findings Summary
 
-2. **Auth tests verify the wrong thing** (`server/tests/test_server.py:518-573`): Tests call the hook function directly and assert on return value, which Bottle ignores. All 235 original tests pass despite auth being completely broken. Fix: add integration tests with real HTTP requests.
+1. **API key not re-read after startup** (Useful) — Session key is re-read per scrape, but API key is loaded once. Asymmetry could surprise operators. Recommend documenting restart requirement.
+2. **`__main__.py` unused imports** (Useful) — Same as ESCALATED TS-12. Confirmed still present. No re-triage needed.
+3. **`read_session_key` accepts None/empty sessionKey values** (Useful) — No crash or data leak, but error path is indirect. Recommend early validation.
 
-### Important (3 findings)
+## Artifacts Produced
 
-3. **SIGTERM doesn't shut down HTTP server** (`server.py:162-166`): Custom signal handler sets flags but `serve_forever()` doesn't check them. Server is unkillable via `kill`. Fix: raise `KeyboardInterrupt` or call `os._exit(0)` in handler.
+- `/home/mikey/tmux-status/.forge/REVIEW-REPORT.md` — Full review report with findings, design alignment, story hygiene, and strengths.
 
-4. **Renderer crashes on None utilization** (`scripts/tmux-claude-status:189,193`): When upstream returns missing data, `round(None)` raises TypeError. Status bar goes blank. Fix: guard with `if fh_util is None or fh_util == "X"`.
+## Open ESCALATE Stories (unchanged)
 
-5. **Empty API key file enables auth bypass** (`server.py:56-64`): Empty key file -> `hmac.compare_digest("", "")` -> True. Fix: return None for empty keys in `_load_api_key`.
+- TS-11: Plaintext API key in settings.conf
+- TS-12: Unused imports in `__main__.py`
+- TS-13: Module-level global state in scraper
+- TS-22: SIGTERM does not shut down HTTP server
+- TS-23: Client fetch embedded in shell script (untestable)
 
-### Useful (3 findings)
+## Next Steps
 
-6. pip install stderr suppressed in install.sh
-7. Private API coupling: `_error_bridge` import
-8. API key file not permission-checked (unlike session key file)
-
-## Design Alignment
-
-MINOR DRIFT — auth mechanism follows design spec exactly, but the design's assumption about Bottle `before_request` hook semantics is wrong. All other aspects closely aligned.
-
-## Artifacts
-
-- `.forge/REVIEW-REPORT.md` — Full review with 8 findings, severity ratings, and solution options
+The review found no Critical or Important issues. The codebase is ready for the triage step (if one is needed for the 3 Useful findings) or can proceed directly to documentation/deployment.
