@@ -186,11 +186,11 @@ if quota_bridge:
         if quota_status == "ok":
             fh = qd.get("five_hour", {})
             fh_util = fh.get("utilization", 0)
-            five_hour_pct = "X" if fh_util == "X" else round(fh_util)
+            five_hour_pct = "X" if fh_util is None or fh_util == "X" else round(fh_util)
             five_hour_reset = fh.get("resets_at", "")
             sd = qd.get("seven_day", {})
             sd_util = sd.get("utilization", 0)
-            seven_day_pct = "X" if sd_util == "X" else round(sd_util)
+            seven_day_pct = "X" if sd_util is None or sd_util == "X" else round(sd_util)
             seven_day_reset = sd.get("resets_at", "")
         elif quota_status == "error":
             five_hour_pct = "X"
