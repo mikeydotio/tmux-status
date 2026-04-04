@@ -1,35 +1,35 @@
-# Handoff: Review -> Triage
+# Handoff: Review -> Triage (Pass 2)
 
 ## Context
 
-Static analysis review of the tmux-status-server implementation (9 stories, 188 tests passing). Review performed against DESIGN.md, IDEA.md, and all implementation files.
+Second static analysis review after fix cycle 1 resolved 7 findings from the first review. Review performed against DESIGN.md, IDEA.md, and all implementation files. 292 tests now pass.
 
 ## Key Decisions for Triage
 
 ### Critical (2 findings)
 
-1. **pyproject.toml build backend is broken** (`server/pyproject.toml:3`): Uses `"setuptools.backends._legacy:_Backend"` which does not exist in standard setuptools. `pip install server/` will fail. Fix: change to `"setuptools.build_meta"`. This is a one-line fix.
+1. **API key auth is completely bypassed** (`server/tmux_status_server/server.py:74-84`): Bottle's `before_request` hooks discard return values — the route handler always executes regardless. Auth check returns 401 JSON but the route overwrites it with real quota data. Fix: use `abort(401)` instead of `return` (one-line change, `abort` already imported).
 
-2. **launchd plist tilde in ProgramArguments** (`server/deploy/io.mikey.tmux-status-server.plist:9`): launchd does not expand `~`, so the daemon will fail to start on macOS. Fix: have install.sh substitute `~` with the actual home directory before copying.
+2. **Auth tests verify the wrong thing** (`server/tests/test_server.py:518-573`): Tests call the hook function directly and assert on return value, which Bottle ignores. All 235 original tests pass despite auth being completely broken. Fix: add integration tests with real HTTP requests.
 
-### Important (4 findings)
+### Important (3 findings)
 
-3. **Renderer ignores most error statuses** (`scripts/tmux-claude-status:186-201`): Only handles `"ok"` and `"error"`, but server returns `"expired"`, `"blocked"`, `"rate_limited"`, etc. These show as "0%" instead of "X%". Fix: add an `else` clause for non-"ok" statuses.
+3. **SIGTERM doesn't shut down HTTP server** (`server.py:162-166`): Custom signal handler sets flags but `serve_forever()` doesn't check them. Server is unkillable via `kill`. Fix: raise `KeyboardInterrupt` or call `os._exit(0)` in handler.
 
-4. **Dockerfile bind 127.0.0.1 unreachable** (`server/Dockerfile:13`): Server defaults to localhost, which is unreachable from outside Docker. Fix: add `CMD ["--host", "0.0.0.0"]`.
+4. **Renderer crashes on None utilization** (`scripts/tmux-claude-status:189,193`): When upstream returns missing data, `round(None)` raises TypeError. Status bar goes blank. Fix: guard with `if fh_util is None or fh_util == "X"`.
 
-5. **Stale org UUID cache** (`server/tmux_status_server/scraper.py:21`): Module-level `_org_uuid` never invalidated on auth errors. Fix: reset on 401/403 from usage endpoint.
+5. **Empty API key file enables auth bypass** (`server.py:56-64`): Empty key file -> `hmac.compare_digest("", "")` -> True. Fix: return None for empty keys in `_load_api_key`.
 
-6. **QUOTA_API_KEY plaintext in settings.conf** (`config/settings.example.conf:25`): Inconsistent with server-side file-based approach. Consider adding `QUOTA_API_KEY_FILE`.
+### Useful (3 findings)
 
-### Useful (5 findings)
-
-7-11. Minor items: localhost check only covers "127.0.0.1", unused imports in `__main__.py`, module-level global state, no graceful Bottle shutdown, hardcoded path in install.sh source line.
+6. pip install stderr suppressed in install.sh
+7. Private API coupling: `_error_bridge` import
+8. API key file not permission-checked (unlike session key file)
 
 ## Design Alignment
 
-MINOR DRIFT. Main gap: renderer doesn't handle the full error status vocabulary from the server (finding #3). The "X" error signaling design is partially broken in the rendering path.
+MINOR DRIFT — auth mechanism follows design spec exactly, but the design's assumption about Bottle `before_request` hook semantics is wrong. All other aspects closely aligned.
 
 ## Artifacts
 
-- `/home/mikey/tmux-status/.forge/REVIEW-REPORT.md` — Full review with 11 findings, severity ratings, and solution options
+- `.forge/REVIEW-REPORT.md` — Full review with 8 findings, severity ratings, and solution options
