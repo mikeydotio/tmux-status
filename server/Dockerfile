@@ -10,3 +10,4 @@ RUN pip install --no-cache-dir .
 EXPOSE 7850
 
 ENTRYPOINT ["tmux-status-server"]
+CMD ["--host", "0.0.0.0"]

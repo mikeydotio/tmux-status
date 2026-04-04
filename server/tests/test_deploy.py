@@ -311,6 +311,47 @@ class TestDockerfileEntrypoint(unittest.TestCase):
         self.fail("No ENTRYPOINT or CMD found in Dockerfile")
 
 
+class TestDockerfileCmd(unittest.TestCase):
+    """Test Dockerfile CMD default arguments."""
+
+    def setUp(self):
+        path = os.path.join(SERVER_DIR, "Dockerfile")
+        with open(path) as f:
+            self.content = f.read()
+
+    def test_cmd_present(self):
+        """Dockerfile has a CMD instruction."""
+        found = any(
+            line.strip().startswith("CMD")
+            for line in self.content.splitlines()
+        )
+        self.assertTrue(found, "Dockerfile must have a CMD instruction")
+
+    def test_cmd_binds_all_interfaces(self):
+        """CMD sets --host 0.0.0.0 for Docker port mapping."""
+        for line in self.content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("CMD"):
+                self.assertIn("--host", stripped)
+                self.assertIn("0.0.0.0", stripped)
+                return
+        self.fail("No CMD found in Dockerfile")
+
+    def test_cmd_after_entrypoint(self):
+        """CMD appears after ENTRYPOINT in the Dockerfile."""
+        entrypoint_line = None
+        cmd_line = None
+        for i, line in enumerate(self.content.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("ENTRYPOINT"):
+                entrypoint_line = i
+            if stripped.startswith("CMD"):
+                cmd_line = i
+        self.assertIsNotNone(entrypoint_line, "ENTRYPOINT must exist")
+        self.assertIsNotNone(cmd_line, "CMD must exist")
+        self.assertGreater(cmd_line, entrypoint_line, "CMD must appear after ENTRYPOINT")
+
+
 class TestDockerfileWorkdir(unittest.TestCase):
     """Test Dockerfile sets a WORKDIR."""
 
