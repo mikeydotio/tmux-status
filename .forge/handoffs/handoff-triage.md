@@ -1,27 +1,24 @@
-# Handoff: triage -> orchestrator (Fix Cycle 2, Pass 3)
+# Handoff: triage -> document (ESCALATE Cycle 3, no FIX items)
 
 ## Summary
-Triaged 6 findings (3 review + 3 validation) from fix cycle 2 review+validate pass. All Useful severity. 0 FIX, 0 new ESCALATE, 5 ACCEPT, 1 already escalated (TS-12).
+9 findings triaged from ESCALATE cycle 3 review+validate. All 7 actionable items promoted from FIX to ESCALATE (max fix cycles reached: 4 >= 3). 2 items accepted. Zero FIX items.
 
 ## Key Decisions
-- **No fix cycle needed**: All findings are observations, not bugs. No correctness, security, or design issues remain after fix cycle 2.
-- **No new ESCALATE stories**: Five existing ESCALATE stories (TS-11, TS-12, TS-13, TS-22, TS-23) remain from prior cycles. No new ones added.
-- **Pipeline disposition**: 0 FIX items → next step is `document` (skip fix loop).
+- **Max fix cycles reached** — 4 completed cycles (cycle-0 through cycle-3) exceeds `max_fix_cycles: 3`. All natural FIX items promoted to ESCALATE per protocol.
+- **7 ESCALATE stories created**: TS-31 (Critical, status code mismatch), TS-32 (Critical, Dockerfile root), TS-33 (Important, shell injection), TS-34 (Important, non-atomic writes), TS-35 (Important, legacy scripts), TS-36 (Important, raw exception text), TS-37 (Useful, interval validation)
+- **TS-36 depends on TS-35**: If legacy scripts removed from install.sh, the exception text issue is moot
+- **2 accepted**: Duplicate scraping logic (transitional), QUOTA_API_KEY plaintext (TS-11, previously accepted)
 
 ## Context for Next Step (Document)
-- The document step should summarize the full pipeline: idea, research, design, initial implementation (10 stories), 3 fix cycles:
-  - Cycle 0: initial review/validate/triage
-  - Cycle 1: 4 FIX items resolved (TS-26 through TS-29)
-  - Cycle 2: 0 FIX items, all findings accepted as Useful observations
-- 309 tests passing, 0 failures. Codebase is functionally correct.
-- Design alignment confirmed: no drift from DESIGN.md after fix cycle 2.
-- 5 ESCALATE stories deferred for user decision.
+- No FIX items → pipeline proceeds to document
+- DOCUMENTATION.md already exists from prior cycle but needs refresh to cover ESCALATE cycle 3 changes (TS-12, TS-13, TS-22, TS-23)
+- 7 new ESCALATE stories pending user review after document step
+- 362 tests passing, 0 failures
 
 ## Pipeline State
-- Fix cycle: 2 / max 3
+- Fix cycle: 4 (max reached)
 - Yolo: false
-- Stories completed: TS-1 through TS-10 (initial), TS-14 through TS-21 (cycle 0 FIX), TS-24 through TS-25 (cycle 1 triage), TS-26 through TS-29 (cycle 2 FIX)
-- Stories escalated: TS-11, TS-12, TS-13, TS-22, TS-23
+- ESCALATE stories pending: 7 (TS-31 through TS-37)
 
 ## Artifacts
-- `.forge/TRIAGE.md` — Full triage report with all 6 findings categorized (0 FIX, 0 ESCALATE, 5 ACCEPT, 1 already escalated)
+- `.forge/TRIAGE.md` — Full triage report: 0 FIX, 7 ESCALATE (promoted), 2 ACCEPTED
