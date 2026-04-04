@@ -1,0 +1,8 @@
+{"kind":"StoryCreated","at":"2026-04-04T02:37:44Z","title":"T2.1: Auth WSGI integration tests — TestAuthIntegrationWSGI using webtest.TestApp. 5+ tests proving auth blocks data leakage. Files: server/tests/test_server.py [fix-cycle-2, auth, test]","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T02:37:44Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T02:37:44Z","labels":["phase:2"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-25","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-26","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-27","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T02:37:44Z","other_id":"TS-28","relation":"blocked-by"}
+{"kind":"StoryCommentAdded","at":"2026-04-04T02:38:14Z","text":"Acceptance: (1) At least 5 WSGI integration tests using webtest.TestApp wrapping real QuotaServer._app. (2) Tests: valid key→200 with data, wrong key→401 no data, missing key→401 no data, /health→200 always, no auth configured→200, empty key→200. (3) All existing 292+ tests pass. (4) 401 responses proven to contain zero quota data (no utilization, no org_uuid)."}

@@ -1,0 +1,39 @@
+{
+  "plan_hash": "0f26a1cec8cf38ab353ef8f7f56e2f2c",
+  "project_story": "TS-25",
+  "fix_cycle": 2,
+  "stories": {
+    "TS-26": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Fix auth bypass — abort(401) in check_auth hook",
+      "acceptance_criteria": "check_auth calls abort(401, ...) instead of return. Remove response.status and response.content_type lines. All existing tests pass (update mocks for HTTPError).",
+      "design_section": "### Authentication\n\nWhen `--api-key-file` is provided:\n- `/quota` requires `X-API-Key` header matching the file contents\n- Comparison uses `hmac.compare_digest()` (timing-safe)\n- Missing or wrong key returns 401\n- `/health` is exempt\n\nWhen no API key configured: all endpoints open, no headers checked.\n\n### Auth Implementation\n\n- `X-API-Key` header, checked via `hmac.compare_digest()` in a Bottle `before_request` hook\n- `/health` exempt from auth (monitoring needs)\n- When no API key configured, no headers checked",
+      "files_expected": ["server/tmux_status_server/server.py"]
+    },
+    "TS-27": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Fix empty API key file auth bypass — _load_api_key() returns None",
+      "acceptance_criteria": "_load_api_key() returns None for empty/whitespace-only key files. logger.warning called. Update tests in test_server.py (assertions from == '' to is None) and test_validate_gaps.py (TestEmptyApiKeySecurityFinding).",
+      "design_section": "### Credential Protection\n\n1. **Session key file permissions:** Server checks `claude-usage-key.json` is `chmod 600` at startup. Refuses to start with a clear error if world-readable.\n2. **No credentials in responses:** `/quota` returns only derived data.\n3. **Error sanitization:** Error responses use generic codes.\n4. **API key storage:** Prefer `--api-key-file` over CLI flags or env vars. File should be `chmod 600`.",
+      "files_expected": ["server/tmux_status_server/server.py", "server/tests/test_server.py", "server/tests/test_validate_gaps.py"]
+    },
+    "TS-28": {
+      "task_ref": "T1.3",
+      "wave": 1,
+      "title": "Fix renderer None utilization guard",
+      "acceptance_criteria": "Lines 189 and 193 of tmux-claude-status contain 'is None or' guard before round(). When utilization is None, renderer outputs 'X%' instead of crashing.",
+      "design_section": "### Error Signaling\n\nWhen the server encounters an error condition, it returns the response with `\"X\"` string values for utilization instead of numbers. The renderer displays these as-is (e.g., `X%`), signaling to the user that something is wrong without breaking the tmux format string.\n\n| Server Condition | `status` field | `utilization` value |\n|-----------------|---------------|-------------------|\n| Normal | `\"ok\"` | Integer 0-100 |\n| Session key expired | `\"expired\"` | `\"X\"` |\n| No data yet | `\"starting\"` | `\"X\"` |",
+      "files_expected": ["scripts/tmux-claude-status"]
+    },
+    "TS-29": {
+      "task_ref": "T2.1",
+      "wave": 2,
+      "title": "Auth WSGI integration tests — webtest.TestApp proof of auth enforcement",
+      "acceptance_criteria": "5+ WSGI integration tests using webtest.TestApp wrapping real QuotaServer._app. Tests: valid key->200 with data, wrong key->401 no data, missing key->401 no data, /health->200 always, no auth->200. All 292+ existing tests pass. 401 responses contain zero quota data.",
+      "design_section": "### `GET /quota`\n\nReturns quota data in the bridge JSON format.\n\n**Auth failure (401):**\n```json\n{\"error\": \"invalid_or_missing_api_key\"}\n```\n\n### `GET /health`\n\nMonitoring endpoint. Always returns 200. Not gated by API key auth.\n\n### Authentication\n\nWhen `--api-key-file` is provided:\n- `/quota` requires `X-API-Key` header matching the file contents\n- Comparison uses `hmac.compare_digest()` (timing-safe)\n- Missing or wrong key returns 401\n- `/health` is exempt\n\nWhen no API key configured: all endpoints open, no headers checked.",
+      "files_expected": ["server/tests/test_server.py"]
+    }
+  }
+}
