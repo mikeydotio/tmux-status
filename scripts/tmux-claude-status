@@ -199,6 +199,9 @@ if quota_bridge:
             five_hour_reset = fh.get("resets_at", "")
             sd = qd.get("seven_day", {})
             seven_day_reset = sd.get("resets_at", "")
+        else:
+            five_hour_pct = "X"
+            seven_day_pct = "X"
     except:
         pass
 
