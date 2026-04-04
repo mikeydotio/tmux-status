@@ -1,0 +1,38 @@
+{
+  "plan_hash": "0fc35dace0b7d07db94506c7e7432785",
+  "project_story": "TS-30",
+  "stories": {
+    "TS-12": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Remove unused imports from __main__.py and update tests",
+      "acceptance_criteria": "__main__.py does NOT import parse_args or warn_if_exposed; main() still delegates to _server_main(); test_package.py and test_server.py tests updated to not assert those imports; all tests pass",
+      "design_section": "## Entry Point\n__main__.py delegates entirely to server.main(). No config imports needed at the __main__ level.",
+      "files_expected": ["server/tmux_status_server/__main__.py", "server/tests/test_package.py", "server/tests/test_server.py"]
+    },
+    "TS-22": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Fix SIGTERM handler to raise SystemExit(0)",
+      "acceptance_criteria": "_handle_sigterm sets _shutdown and _wake events then raises SystemExit(0); SIGINT handler same; SIGUSR1 unchanged; signal tests updated to assertRaises(SystemExit); new test verifies exit code 0",
+      "design_section": "## Signal Handling\nSIGTERM/SIGINT: set shutdown events (belt-and-suspenders for daemon poll thread), then raise SystemExit(0) which propagates through serve_forever(). SIGUSR1: wake poll thread only.",
+      "files_expected": ["server/tmux_status_server/server.py", "server/tests/test_server.py"]
+    },
+    "TS-23": {
+      "task_ref": "T1.3",
+      "wave": 1,
+      "title": "Build polyglot extraction harness for _maybe_fetch_quota testing",
+      "acceptance_criteria": "Test harness reads scripts/tmux-claude-status, extracts _maybe_fetch_quota function definition from embedded Python block, makes it callable via compile()+exec(); canary assertions verify extraction; existing _maybe_fetch_quota_impl replaced with extracted version; scripts/tmux-claude-status NOT modified",
+      "design_section": "## Client Fetch\n_maybe_fetch_quota is embedded in the bash/python polyglot. Extract only that function (not full block due to bash $TRANSCRIPT interpolation). Key off 'def _maybe_fetch_quota' and extract to next module-level definition.",
+      "files_expected": ["server/tests/test_polyglot_extract.py", "server/tests/test_validate_gaps.py"]
+    },
+    "TS-13": {
+      "task_ref": "T2.1",
+      "wave": 2,
+      "title": "Refactor _org_uuid from module global to QuotaServer instance state",
+      "acceptance_criteria": "scraper.py has no module-level _org_uuid or global _org_uuid; fetch_quota(session_key, org_uuid=None) returns (result_dict, new_org_uuid) tuple; QuotaServer.__init__ sets self._org_uuid=None; _do_scrape passes/stores org_uuid; caching semantics preserved (skip discovery when cached, clear on 401/403); all setUp resets of scraper._org_uuid removed; all tests pass",
+      "design_section": "## Scraper State\nfetch_quota becomes stateless: accepts org_uuid parameter, returns (result, new_org_uuid) tuple. QuotaServer owns the state via self._org_uuid. No Scraper class needed.",
+      "files_expected": ["server/tmux_status_server/scraper.py", "server/tmux_status_server/server.py", "server/tests/test_scraper.py", "server/tests/test_server.py", "server/tests/test_validate_gaps.py"]
+    }
+  }
+}
