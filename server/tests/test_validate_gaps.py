@@ -26,6 +26,7 @@ from unittest import mock
 
 # Add server directory to path so we can import the module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from tmux_status_server import scraper
 from tmux_status_server.config import parse_args
@@ -83,36 +84,11 @@ def _start_test_server():
     return server, port
 
 
-# Import _maybe_fetch_quota from the client script (it is embedded in a bash/python script)
-# We extract the function definition to test it independently.
+# Extract the real _maybe_fetch_quota from the polyglot script instead of
+# maintaining a manual re-implementation that can drift.
+from polyglot_extract import load_function
 
-def _maybe_fetch_quota_impl(source_url, api_key, cache_ttl, cache_path):
-    """Re-implementation matching the client script logic for testability."""
-    import urllib.request
-    if not source_url:
-        return
-    if cache_ttl > 0:
-        try:
-            if time.time() - os.stat(cache_path).st_mtime < cache_ttl:
-                return  # cache is fresh
-        except FileNotFoundError:
-            pass
-    try:
-        req = urllib.request.Request(source_url.rstrip('/') + '/quota')
-        if api_key:
-            req.add_header('X-API-Key', api_key)
-        resp = urllib.request.urlopen(req, timeout=3)
-        data = resp.read()
-        json.loads(data)  # validate JSON
-        cache_dir = os.path.dirname(cache_path)
-        if cache_dir:
-            os.makedirs(cache_dir, exist_ok=True)
-        tmp = cache_path + '.tmp'
-        with open(tmp, 'wb') as f:
-            f.write(data)
-        os.replace(tmp, cache_path)
-    except Exception:
-        pass  # silent failure, use stale cache
+_maybe_fetch_quota_impl = load_function('_maybe_fetch_quota')
 
 
 # ---------------------------------------------------------------------------
