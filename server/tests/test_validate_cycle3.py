@@ -802,17 +802,17 @@ class TestConfigBoundaryValues(unittest.TestCase):
         args = parse_args(["--port", "65535"])
         self.assertEqual(args.port, 65535)
 
-    def test_interval_zero(self):
-        """Interval 0 is accepted (continuous scraping)."""
+    def test_interval_zero_rejected(self):
+        """Interval 0 is rejected (below minimum 30)."""
         from tmux_status_server.config import parse_args
-        args = parse_args(["--interval", "0"])
-        self.assertEqual(args.interval, 0)
+        with self.assertRaises(SystemExit):
+            parse_args(["--interval", "0"])
 
-    def test_interval_one(self):
-        """Interval 1 (minimum practical) is accepted."""
+    def test_interval_one_rejected(self):
+        """Interval 1 is rejected (below minimum 30)."""
         from tmux_status_server.config import parse_args
-        args = parse_args(["--interval", "1"])
-        self.assertEqual(args.interval, 1)
+        with self.assertRaises(SystemExit):
+            parse_args(["--interval", "1"])
 
     def test_negative_port_accepted_by_argparse(self):
         """Negative port is parsed as int (validation is not in argparse)."""
