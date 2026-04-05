@@ -68,6 +68,9 @@ def parse_args(argv=None):
 
     args = parser.parse_args(argv)
 
+    if args.interval < 30:
+        parser.error("--interval must be at least 30 seconds")
+
     # Expand ~ in file paths
     args.key_file = os.path.expanduser(args.key_file)
     if args.api_key_file is not None:

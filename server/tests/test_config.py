@@ -235,6 +235,30 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(args.log_level, "INFO")
 
 
+class TestIntervalLowerBound(unittest.TestCase):
+    """Test --interval lower bound validation."""
+
+    def test_interval_29_rejected(self):
+        """--interval 29 is rejected (below minimum 30)."""
+        with self.assertRaises(SystemExit):
+            parse_args(["--interval", "29"])
+
+    def test_interval_1_rejected(self):
+        """--interval 1 is rejected (below minimum 30)."""
+        with self.assertRaises(SystemExit):
+            parse_args(["--interval", "1"])
+
+    def test_interval_30_accepted(self):
+        """--interval 30 is accepted (minimum valid value)."""
+        args = parse_args(["--interval", "30"])
+        self.assertEqual(args.interval, 30)
+
+    def test_interval_300_accepted(self):
+        """--interval 300 (default) is accepted."""
+        args = parse_args(["--interval", "300"])
+        self.assertEqual(args.interval, 300)
+
+
 class TestWarnIfExposedLocalhostVariants(unittest.TestCase):
     """Test warn_if_exposed with localhost variants."""
 
