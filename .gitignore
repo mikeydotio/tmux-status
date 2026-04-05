@@ -14,3 +14,5 @@ server/build/
 .forge/state.json
 .forge/lock.json
 .forge/verdicts.jsonl
+
+# .storyhook/ is version-controlled project data — do not ignore
