@@ -1,33 +1,50 @@
 # Handoff: escalate-review -> plan
 
 ## Summary
-Completed ESCALATE review loop with user. 5 ESCALATE stories reviewed, 1 accepted (TS-11), 4 to fix.
+Completed ESCALATE review loop with user. 7 ESCALATE stories reviewed: 6 to fix, 1 accepted (TS-36, moot due to TS-35 file deletion).
 
 ## User Decisions
 
-### TS-11: QUOTA_API_KEY plaintext in settings.conf — ACCEPTED (done)
-No code change. Key only protects local quota data.
+### TS-31 (Critical): Status code mismatch — FIX
+Replace `expired` with `session_key_expired` in renderer. No backward compatibility — just use the new code. Server already sends `session_key_expired` for HTTP 401.
 
-### TS-12: __main__.py unused imports — FIX
-Remove unused imports (parse_args, warn_if_exposed) from __main__.py. Update/remove tests that check for them.
+### TS-32 (Critical): Dockerfile runs as root — FIX
+Add non-root user in Dockerfile: `RUN useradd -r -s /usr/sbin/nologin appuser` + `USER appuser`. Standard security practice, no downside for this project.
 
-### TS-13: Scraper module-level _org_uuid global state — FIX
-Refactor _org_uuid from module-level global to instance attribute on a class. Touches scraper.py, server.py, and test files.
+### TS-33 (Important): Shell injection via filename — FIX
+Pass pidfile via sys.argv: `python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$pidfile"`. Same dependency footprint, complete fix.
 
-### TS-22: SIGTERM does not shut down HTTP server — FIX
-Replace flag-setting in _handle_sigterm with raise SystemExit(0). serve_forever() propagates SystemExit. Poll thread is daemon.
+### TS-34 (Important): Context hook non-atomic write — FIX
+Add temp+rename pattern to `tmux-status-context-hook.js:55`. Write to `.tmp` then `renameSync`. Consistent with project convention.
 
-### TS-23: Client _maybe_fetch_quota embedded in shell script — FIX
-Test harness extracts the Python code from the polyglot bash/python script and tests it directly. No structural change to the script itself.
+### TS-35 (Important): Legacy scripts still shipped — FIX
+Remove deprecated `tmux-status-quota-fetch` and `tmux-status-quota-poll` from install.sh SCRIPTS array. **Also delete the script files entirely** — user confirmed git history is sufficient. Remove `tmux-status-quota-poll` as well.
+
+### TS-36 (Important): Old fetch script exposes raw exception text — ACCEPTED
+Moot — TS-35 deletes the files entirely. No action needed.
+
+### TS-37 (Medium): No interval lower bound validation — FIX
+Add `if args.interval < 30: parser.error(...)` in parse_args(). Clear error message. Matches old MIN_INTERVAL=30 behavior.
 
 ## Context for Next Step (Plan)
-- Fix cycle: 3 (ESCALATE fixes, not triage FIX items)
-- Archived cycle-3 artifacts: TRIAGE.md, PLAN.md, plan-mapping.json, REVIEW-REPORT.md, VALIDATE-REPORT.md
-- 4 stories need planning: TS-12, TS-13, TS-22, TS-23
-- Tests: 309 passing, 0 failures (baseline before ESCALATE fixes)
-- DOCUMENTATION.md already written — will need update after ESCALATE fixes complete
+- Fix cycle: 5 (ESCALATE cycle 4 fixes)
+- Archived cycle-4 artifacts: TRIAGE.md, PLAN.md, plan-mapping.json, REVIEW-REPORT.md, VALIDATE-REPORT.md, DOCUMENTATION.md
+- 6 stories need planning: TS-31, TS-32, TS-33, TS-34, TS-35, TS-37
+- TS-36 accepted (moot due to TS-35)
+- Tests: 362 passing, 0 failures (baseline)
+- DOCUMENTATION.md archived — needs regeneration after fixes
 
 ## Pipeline State
 - Yolo: false
-- Max fix cycles: 3
-- Current fix cycle: 3 (ESCALATE)
+- Max fix cycles: 3 (exceeded, operating in ESCALATE mode)
+- Current fix cycle: 4 (ESCALATE)
+- Stories to fix: 6
+- Stories accepted: 1 (TS-36)
+
+## Artifacts Archived to fix-cycles/cycle-4/
+- TRIAGE.md
+- PLAN.md
+- plan-mapping.json
+- REVIEW-REPORT.md
+- VALIDATE-REPORT.md
+- DOCUMENTATION.md
