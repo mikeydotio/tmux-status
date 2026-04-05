@@ -52,10 +52,12 @@ process.stdin.on('end', () => {
       const bridgeDir = path.join(homeDir, '.cache', 'tmux-status');
       fs.mkdirSync(bridgeDir, { recursive: true });
       const bridgePath = path.join(bridgeDir, `claude-ctx-${session}.json`);
-      fs.writeFileSync(bridgePath, JSON.stringify({
+      const tmpPath = bridgePath + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify({
         used_pct: usedPct,
         timestamp: Math.floor(Date.now() / 1000)
       }));
+      fs.renameSync(tmpPath, bridgePath);
     } catch (e) {}
   } catch (e) {}
 });
