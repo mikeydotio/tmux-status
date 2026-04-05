@@ -1,0 +1,57 @@
+{
+  "plan_hash": "c8d25f64341a49c2fbc2f45ac666b0cc",
+  "project_story": "TS-38",
+  "fix_cycle": 5,
+  "stories": {
+    "TS-31": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Fix status code mismatch + shell injection in tmux-claude-status",
+      "combined_with": "TS-33",
+      "acceptance_criteria": "Line 298 case pattern includes `session_key_expired`; no bare `expired` as standalone alternative; lines 22 and 27 pass pidfile via sys.argv instead of string interpolation; no `open('$pidfile')` or `open(\"$pidfile\")` remains; script executable; bash -n passes",
+      "design_section": "### tmux-claude-status (modified)\n\n- **Purpose:** Render tmux status line 0 (unchanged); fetch quota data from server (new)\n- **Interfaces:** Called by tmux via `#(tmux-claude-status <pane_pid>)` every 5 seconds\n\n### Error Signaling\n\nWhen the server encounters an error condition, it returns the response with `\"X\"` string values for utilization instead of numbers. The renderer displays these as-is (e.g., `X%`).\n\n| Server Condition | `status` field | `utilization` value |\n|-----------------|---------------|-------------------|\n| Session key expired | `\"expired\"` | `\"X\"` |\n\nThe `error` field contains a machine-readable error code (never raw exception text).",
+      "files_expected": ["scripts/tmux-claude-status"]
+    },
+    "TS-33": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Shell injection via filename in polyglot script (combined with TS-31)",
+      "combined_with": "TS-31",
+      "acceptance_criteria": "Lines 22 and 27 pass pidfile via sys.argv instead of string interpolation; no `open('$pidfile')` or `open(\"$pidfile\")` remains; script executable; bash -n passes",
+      "design_section": "### tmux-claude-status (modified)\n\nSame file as TS-31. Shell injection in pidfile interpolation at lines 22 and 27 — python3 -c invocations must use sys.argv[1] and shell must pass \"$pidfile\" as positional argument.",
+      "files_expected": ["scripts/tmux-claude-status"]
+    },
+    "TS-32": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Add non-root USER to Dockerfile",
+      "acceptance_criteria": "Dockerfile contains RUN useradd for non-root user; USER directive after pip install and before ENTRYPOINT; test_deploy.py verifies USER directive; pytest passes",
+      "design_section": "### Security Considerations\n\nThe Dockerfile must not run as root. Add a non-root user (e.g., appuser) created via `useradd -r -s /usr/sbin/nologin appuser` and switch to it via `USER appuser` before the ENTRYPOINT.",
+      "files_expected": ["server/Dockerfile", "server/tests/test_deploy.py"]
+    },
+    "TS-34": {
+      "task_ref": "T1.3",
+      "wave": 1,
+      "title": "Make context hook use atomic writes",
+      "acceptance_criteria": "No bare writeFileSync(bridgePath, ...) to final path; write to tmp path + renameSync to final path; node -c passes; script remains executable",
+      "design_section": "### Atomic Writes\n\nAll bridge/cache files use temp-file + rename to avoid partial reads. The context hook (tmux-status-context-hook.js) must follow this pattern:\n\n```javascript\nconst tmpPath = bridgePath + '.tmp';\nfs.writeFileSync(tmpPath, data);\nfs.renameSync(tmpPath, bridgePath);\n```",
+      "files_expected": ["scripts/tmux-status-context-hook.js"]
+    },
+    "TS-35": {
+      "task_ref": "T1.4",
+      "wave": 1,
+      "title": "Remove legacy quota scripts from repo and install.sh",
+      "acceptance_criteria": "scripts/tmux-status-quota-fetch deleted; scripts/tmux-status-quota-poll deleted; install.sh SCRIPTS array has neither; bash -n install.sh passes; SCRIPTS array retains 5 remaining scripts",
+      "design_section": "### Server Replaces Standalone Poller\n\nThe scraping logic from `scripts/tmux-status-quota-fetch` is the canonical source, refactored into `server/tmux_status_server/scraper.py`. The old scripts are deprecated.\n\n| Current script | Disposition |\n|---------------|-------------|\n| `tmux-status-quota-fetch` | Deprecated. Logic moves to `scraper.py` |\n| `tmux-status-quota-poll` | Deprecated. Replaced by server's poll thread |",
+      "files_expected": ["scripts/tmux-status-quota-fetch", "scripts/tmux-status-quota-poll", "install.sh"]
+    },
+    "TS-37": {
+      "task_ref": "T1.5",
+      "wave": 1,
+      "title": "Add interval lower bound validation in server config",
+      "acceptance_criteria": "parse_args() rejects --interval < 30 via parser.error(); --interval 29 raises SystemExit; --interval 30 succeeds; --interval 1 raises SystemExit; test_config.py has rejection and acceptance tests; pytest passes",
+      "design_section": "### tmux-status-server (new package)\n\n- **Purpose:** Scrape claude.ai for quota data and serve it via HTTP REST API\n- **Dependencies:** `bottle>=0.12.25`, `curl_cffi>=0.5`, Python `>=3.10`\n\nThe server's --interval flag controls scrape frequency (default 300s). Must enforce minimum of 30 seconds to prevent accidental DoS against claude.ai, matching the old MIN_INTERVAL = 30 guard.",
+      "files_expected": ["server/tmux_status_server/config.py", "server/tests/test_config.py"]
+    }
+  }
+}
