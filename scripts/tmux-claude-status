@@ -19,12 +19,12 @@ CLAUDE_DIR="${HOME}/.claude"
 SESSION_CWD=""
 for pidfile in "${CLAUDE_DIR}/sessions/"*.json; do
     [ -f "$pidfile" ] || continue
-    pid=$(python3 -c "import json; print(json.load(open('$pidfile'))['pid'])" 2>/dev/null)
+    pid=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$pidfile" 2>/dev/null)
     [ -z "$pid" ] && continue
     check_pid="$pid"
     while [ -n "$check_pid" ] && [ "$check_pid" != "1" ] && [ "$check_pid" != "0" ]; do
         if [ "$check_pid" = "$PANE_PID" ]; then
-            SESSION_CWD=$(python3 -c "import json; print(json.load(open('$pidfile'))['cwd'])" 2>/dev/null)
+            SESSION_CWD=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['cwd'])" "$pidfile" 2>/dev/null)
             break 2
         fi
         check_pid=$(ps -o ppid= -p "$check_pid" 2>/dev/null | tr -d ' ')
@@ -295,7 +295,7 @@ QUOTA_7D_BAR=$(bar_char "$QUOTA_7D_PCT")
 # Determine quota text color: red on error/expiry, normal otherwise
 QUOTA_COLOR="colour7"
 case "$QUOTA_STATUS" in
-    expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
+    session_key_expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
     *) [ "${KEY_EXPIRY_WARN:-0}" = "1" ] && QUOTA_COLOR="colour196" ;;
 esac
 
