@@ -365,5 +365,61 @@ class TestDockerfileWorkdir(unittest.TestCase):
         self.assertIn("WORKDIR", self.content)
 
 
+class TestDockerfileUser(unittest.TestCase):
+    """Test Dockerfile non-root user."""
+
+    def setUp(self):
+        path = os.path.join(SERVER_DIR, "Dockerfile")
+        with open(path) as f:
+            self.content = f.read()
+
+    def test_has_user_directive(self):
+        """Dockerfile has a USER directive."""
+        found = any(
+            line.strip().startswith("USER")
+            for line in self.content.splitlines()
+        )
+        self.assertTrue(found, "Dockerfile must have a USER directive")
+
+    def test_user_is_not_root(self):
+        """USER directive specifies a non-root user."""
+        for line in self.content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("USER"):
+                user = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ""
+                self.assertNotEqual(user, "root", "USER must not be root")
+                self.assertTrue(len(user) > 0, "USER must specify a username")
+                return
+        self.fail("No USER directive found")
+
+    def test_user_after_pip_install(self):
+        """USER directive appears after pip install."""
+        pip_line = None
+        user_line = None
+        for i, line in enumerate(self.content.splitlines()):
+            stripped = line.strip()
+            if "pip install" in stripped:
+                pip_line = i
+            if stripped.startswith("USER"):
+                user_line = i
+        self.assertIsNotNone(pip_line, "pip install must exist")
+        self.assertIsNotNone(user_line, "USER must exist")
+        self.assertGreater(user_line, pip_line, "USER must appear after pip install")
+
+    def test_user_before_entrypoint(self):
+        """USER directive appears before ENTRYPOINT."""
+        entrypoint_line = None
+        user_line = None
+        for i, line in enumerate(self.content.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("ENTRYPOINT"):
+                entrypoint_line = i
+            if stripped.startswith("USER"):
+                user_line = i
+        self.assertIsNotNone(entrypoint_line, "ENTRYPOINT must exist")
+        self.assertIsNotNone(user_line, "USER must exist")
+        self.assertLess(user_line, entrypoint_line, "USER must appear before ENTRYPOINT")
+
+
 if __name__ == "__main__":
     unittest.main()
