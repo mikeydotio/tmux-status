@@ -1,24 +1,28 @@
-# Handoff: triage -> document (ESCALATE Cycle 3, no FIX items)
+# Handoff: Triage -> Document (Fix Cycle 5)
 
 ## Summary
-9 findings triaged from ESCALATE cycle 3 review+validate. All 7 actionable items promoted from FIX to ESCALATE (max fix cycles reached: 4 >= 3). 2 items accepted. Zero FIX items.
+Fix cycle 5 triage complete. Max fix cycles exceeded (5 of max 3) — no FIX items, 2 ESCALATE stories created, 3 findings deferred as advisory.
 
 ## Key Decisions
-- **Max fix cycles reached** — 4 completed cycles (cycle-0 through cycle-3) exceeds `max_fix_cycles: 3`. All natural FIX items promoted to ESCALATE per protocol.
-- **7 ESCALATE stories created**: TS-31 (Critical, status code mismatch), TS-32 (Critical, Dockerfile root), TS-33 (Important, shell injection), TS-34 (Important, non-atomic writes), TS-35 (Important, legacy scripts), TS-36 (Important, raw exception text), TS-37 (Useful, interval validation)
-- **TS-36 depends on TS-35**: If legacy scripts removed from install.sh, the exception text issue is moot
-- **2 accepted**: Duplicate scraping logic (transitional), QUOTA_API_KEY plaintext (TS-11, previously accepted)
+- **TS-39** (ESCALATE): `$TRANSCRIPT` shell interpolation — same vulnerability class as TS-33 but theoretical-only risk (UUID filenames). Options: quote heredoc, env var, or defer.
+- **TS-40** (ESCALATE): 401 returns HTML not JSON — missing `@app.error(401)` handler. Options: add handler (recommended), restructure auth, or defer.
+- Max fix cycles exceeded — both findings promoted from FIX to ESCALATE automatically.
+- 3 Useful findings deferred: README stale refs, uninstall.sh dead entries, settings.conf sourcing (all advisory, no stories created).
+- All 3 validate findings resolved or not actionable.
 
-## Context for Next Step (Document)
-- No FIX items → pipeline proceeds to document
-- DOCUMENTATION.md already exists from prior cycle but needs refresh to cover ESCALATE cycle 3 changes (TS-12, TS-13, TS-22, TS-23)
-- 7 new ESCALATE stories pending user review after document step
-- 362 tests passing, 0 failures
+## Context for Next Step
+The document step should produce DOCUMENTATION.md covering the full pipeline output. After documentation, the orchestrator will enter the ESCALATE review loop presenting TS-39 and TS-40 to the user for decision.
+
+Two ESCALATE stories are pending in storyhook:
+- TS-39: `$TRANSCRIPT` heredoc interpolation (high priority, security/renderer)
+- TS-40: 401 HTML response (medium priority, api/server)
 
 ## Pipeline State
-- Fix cycle: 4 (max reached)
-- Yolo: false
-- ESCALATE stories pending: 7 (TS-31 through TS-37)
+- Fix cycle: 5 / max 3 (exceeded, no more fix cycles)
+- Yolo mode: false
+- Total tests: 406 passing
+- ESCALATE stories pending: 2 (TS-39, TS-40)
+- All prior stories (TS-1 through TS-38) are done
 
 ## Artifacts
-- `.forge/TRIAGE.md` — Full triage report: 0 FIX, 7 ESCALATE (promoted), 2 ACCEPTED
+- `.forge/TRIAGE.md` — Full triage report: 0 FIX, 2 ESCALATE (promoted), 3 DEFERRED
