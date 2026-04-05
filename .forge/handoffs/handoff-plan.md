@@ -1,35 +1,35 @@
-# Handoff: Plan (Fix Cycle 2) -> Decompose
+# Handoff: plan -> decompose
 
-## Context
-
-Fix cycle 2 plan approved. 4 FIX items from triage pass 2, organized into 5 tasks across 2 waves.
+## Summary
+Fix cycle 5 (ESCALATE fixes) plan approved. 6 stories, 5 implementation tasks in Wave 1 (fully parallel), 1 regression gate in Wave 2.
 
 ## Key Decisions
+- TS-31 + TS-33 combined into T1.1 (both edit tmux-claude-status, avoids merge conflict)
+- All Wave 1 tasks are independent — can be decomposed into parallel stories
+- TS-36 accepted as moot (covered by TS-35 file deletion) — no task needed
+- User approved plan without modifications
 
-1. **Wave 1 (3 tasks, parallel):**
-   - T1.1: Auth bypass fix — `abort(401, ...)` replaces `return json.dumps(...)` in check_auth hook (server.py:74-84). Critical.
-   - T1.2: Empty API key fix — `_load_api_key()` returns `None` for empty/whitespace files with WARNING log (server.py:55-64). Critical. Updates tests in test_server.py and test_validate_gaps.py.
-   - T1.3: Renderer None guard — `is None or` added before `round()` at lines 189, 193 of tmux-claude-status. Important.
-
-2. **Wave 2 (1 task, depends on Wave 1):**
-   - T2.1: WSGI integration tests via `webtest.TestApp` — 5+ tests proving auth blocks data leakage at the Bottle pipeline level. Tests: valid key->200, wrong key->401 no data, missing key->401 no data, /health->200 always, no auth->200.
-
-3. **Test strategy:** Update existing mock-based auth tests for HTTPError (abort), add WSGI integration tests as authoritative proof, structural tests remain.
+## Task Summary
+- T1.1: Fix status code mismatch + shell injection in tmux-claude-status (TS-31, TS-33)
+- T1.2: Add non-root USER to Dockerfile (TS-32)
+- T1.3: Atomic writes in context hook JS (TS-34)
+- T1.4: Remove legacy quota scripts from repo + install.sh (TS-35)
+- T1.5: Add --interval < 30 rejection in server config (TS-37)
+- T2.1: Full regression run (362+ tests, verification only)
 
 ## Context for Next Step (Decompose)
-
-- All tasks are small (single-file or 2-3 file changes)
-- `webtest` 3.0.7 and `bottle` 0.13.4 already in venv
-- Mock tests in TestAuthHook will need updating when check_auth raises instead of returns
-- test_server.py has existing TestApiKeyEdgeCases at line 1083+ that need assertion changes
-- test_validate_gaps.py has TestEmptyApiKeySecurityFinding at line 379+ that needs updating
+- 6 ESCALATE stories already exist in storyhook: TS-31, TS-32, TS-33, TS-34, TS-35, TS-37
+- These stories need updating with acceptance criteria from the plan, NOT new story creation
+- T2.1 is a verification gate, not a story — handled by the evaluator during execution
+- Wave 1 is fully parallel — all tasks can execute concurrently
 
 ## Pipeline State
-- Fix cycle: 2 / 3 (max)
-- Yolo mode: false
-- ESCALATE stories pending: 5 (TS-11, TS-12, TS-13, TS-22, TS-23)
-- Total tasks this cycle: 5 (across 2 waves)
-- All 292+ existing tests passing
+- Fix cycle: 5 (ESCALATE cycle)
+- Yolo: false
+- Max fix cycles: 3 (exceeded, operating in ESCALATE mode)
+- Tests: 362 passing (baseline)
+- Stories to fix: 6 (TS-31, TS-32, TS-33, TS-34, TS-35, TS-37)
+- Stories accepted: 1 (TS-36, moot)
 
 ## Open Questions
-None — all fixes have clear solutions from triage.
+- None — plan approved as-is
