@@ -113,7 +113,7 @@ _home = os.path.expanduser("~")
 _config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(_home, ".config"))
 _settings_file = os.path.join(_config_dir, "tmux-status", "settings.conf")
 quota_bridge = os.path.join(_home, ".cache", "tmux-status", "claude-quota.json")
-quota_source = ""
+quota_source = "http://127.0.0.1:7850"
 quota_api_key = ""
 quota_cache_ttl = 30
 try:

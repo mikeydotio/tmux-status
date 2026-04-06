@@ -144,6 +144,26 @@ for example_file in "$INSTALL_DIR"/config/*.example.*; do
     fi
 done
 
+# ── Migrate settings.conf for new keys ──────────────────────
+_settings="$CONFIG_DIR/settings.conf"
+if [ -f "$_settings" ]; then
+    _migrated=false
+    if ! grep -q '^QUOTA_SOURCE=' "$_settings"; then
+        printf '\n# URL of the quota data server (added by installer upgrade)\nQUOTA_SOURCE=http://127.0.0.1:7850\n' >> "$_settings"
+        _migrated=true
+    fi
+    if ! grep -q '^QUOTA_CACHE_TTL=' "$_settings"; then
+        printf '\n# Cache TTL in seconds. 0 = always fetch (localhost). 30 = remote.\nQUOTA_CACHE_TTL=0\n' >> "$_settings"
+        _migrated=true
+    fi
+    if grep -q '^TOP_BANNER=' "$_settings" && ! grep -q '^SHOW_TOP_BANNER=' "$_settings"; then
+        _val=$(grep '^TOP_BANNER=' "$_settings" | head -1 | cut -d= -f2)
+        printf '\n# Migrated from TOP_BANNER (renamed)\nSHOW_TOP_BANNER=%s\n' "$_val" >> "$_settings"
+        _migrated=true
+    fi
+    $_migrated && ok "Migrated settings.conf with new settings"
+fi
+
 # ── Add source line to tmux.conf ──────────────────────────────
 TMUX_CONF=$(detect_tmux_conf)
 info "Configuring $TMUX_CONF..."
