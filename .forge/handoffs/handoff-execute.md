@@ -1,39 +1,33 @@
-# Handoff: execute -> review+validate (Fix Cycle 5)
+# Handoff: Execute → Review+Validate (Fix Cycle 6)
 
 ## Summary
-All 6 ESCALATE stories implemented in a single session. 370 tests passing (8 new).
+Both ESCALATE stories from fix cycle 6 implemented and verified. 112 tests passing.
 
 ## Stories Completed
 | Story | Task | Fix | Commit |
 |-------|------|-----|--------|
-| TS-31 + TS-33 | T1.1 | Status code mismatch + shell injection in tmux-claude-status | 4449f52 |
-| TS-32 | T1.2 | Non-root USER directive in Dockerfile | 8d2ed9d |
-| TS-34 | T1.3 | Atomic writes in context hook (tmp+rename) | 0204d5e |
-| TS-35 | T1.4 | Removed legacy quota-fetch/quota-poll scripts | bf95bd9 |
-| TS-37 | T1.5 | Interval lower bound validation (>= 30s) | b21805a |
-
-## Regression Note
-2 pre-existing boundary tests (test_validate_cycle3.py) expected interval 0 and 1 to be accepted. Updated to expect rejection per TS-37. Fixed in c016cf0.
+| TS-39 | T1.1 | $TRANSCRIPT env var to eliminate shell interpolation | 4b36e7d |
+| TS-40 | T1.2 | @app.error(401) JSON handler | d3c9541 |
 
 ## Patterns Established
-- All fixes are isolated single-file or 2-file changes
-- Atomic write pattern: tmp + rename (applied to JS context hook, consistent with Python scripts)
-- sys.argv pattern for safe shell-to-Python parameter passing
+- Error handlers in server.py: `@app.error(code)` → set content_type → return json.dumps
+- Shell-to-Python var passing: `VAR="$VAR" python3 << HEREDOC` + `os.environ["VAR"]`
+
+## Micro-Decisions
+- Heredoc remains unquoted (user chose Option 2 for TS-39) — only $TRANSCRIPT migrated to env var
+- 401 handler hardcodes error string (Bottle ignores abort body in custom error handlers)
 
 ## Code Landmarks
-- `scripts/tmux-claude-status` — Main renderer, now with session_key_expired + sys.argv pidfile reads
-- `scripts/tmux-status-context-hook.js` — Context hook, now with atomic writes
-- `server/Dockerfile` — Now runs as appuser (non-root)
-- `server/tmux_status_server/config.py` — Now rejects --interval < 30
-- `install.sh` — SCRIPTS array reduced to 5 (legacy scripts removed)
+- `scripts/tmux-claude-status:46` — TRANSCRIPT env var passing
+- `server/tmux_status_server/server.py:119-122` — 401 error handler
 
 ## Test State
-- 370 tests passing, 0 failures
-- Run: `python3 -m pytest server/tests/ -q`
-- bash -n / node -c syntax checks all pass
+- 112 tests passing, 0 failures, 1 deprecation warning (cgi module in webob)
+- Run: `uv run --directory server python3 -m pytest tests/test_server.py`
+- `bash -n` passes on tmux-claude-status and tmux-git-status
 
 ## Pipeline State
-- Fix cycle: 5 (ESCALATE)
+- Fix cycle: 6 (ESCALATE resolution)
 - All stories done
-- TS-24, TS-25 are stale cycle-2 parent stories — not part of this pipeline
+- TS-24, TS-25 are stale — not part of this pipeline
 - Next: review + validate
