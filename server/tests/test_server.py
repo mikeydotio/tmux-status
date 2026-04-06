@@ -353,8 +353,9 @@ class TestQuotaServerInit(unittest.TestCase):
         self.assertIn("before_request", hooks)
 
     def test_error_handlers_registered(self):
-        """Constructor registers error handlers for 404 and 500."""
+        """Constructor registers error handlers for 401, 404 and 500."""
         server, routes, hooks, errors, _ = _make_server()
+        self.assertIn(401, errors)
         self.assertIn(404, errors)
         self.assertIn(500, errors)
 
@@ -926,6 +927,13 @@ class TestErrorResponses(unittest.TestCase):
         result_json = errors[404](mock.MagicMock())
         result = json.loads(result_json)
         self.assertEqual(result["error"], "not_found")
+
+    def test_401_error_handler_returns_invalid_key(self):
+        """401 error handler returns invalid_or_missing_api_key."""
+        server, routes, hooks, errors, mb = _make_server()
+        result_json = errors[401](mock.MagicMock())
+        result = json.loads(result_json)
+        self.assertEqual(result["error"], "invalid_or_missing_api_key")
 
 
 # ---------------------------------------------------------------------------
@@ -1662,15 +1670,17 @@ class TestWSGIAuthDataLeakageExhaustive(unittest.TestCase):
         self.assertNotIn("utilization", resp.text)
 
     def test_401_response_content_type_is_json(self):
-        """Auth failure 401 response body is valid JSON."""
+        """Auth failure 401 response has application/json content type."""
         server, app = _make_wsgi_server()
         server._api_key = "secret"
         server._cached_data = dict(_SAMPLE_QUOTA_DATA)
 
         resp = app.get("/quota", expect_errors=True)
-        # Bottle abort wraps in HTML by default, but our abort body is JSON
+        self.assertTrue(
+            resp.content_type.startswith("application/json"),
+            f"Expected application/json, got {resp.content_type}",
+        )
         body = resp.text
-        # The body should contain our JSON error
         self.assertIn("invalid_or_missing_api_key", body)
 
 

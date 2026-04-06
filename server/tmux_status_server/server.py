@@ -116,6 +116,11 @@ class QuotaServer:
                 "version": __version__,
             })
 
+        @app.error(401)
+        def error401(err):
+            response.content_type = "application/json"
+            return json.dumps({"error": "invalid_or_missing_api_key"})
+
         @app.error(404)
         def error404(err):
             response.content_type = "application/json"
