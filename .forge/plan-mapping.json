@@ -1,0 +1,22 @@
+{
+  "plan_hash": "ed51011c68036a037c00f62f991cddf8",
+  "project_story": null,
+  "stories": {
+    "TS-39": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Fix $TRANSCRIPT shell interpolation in Python heredoc",
+      "acceptance_criteria": "Line 46 passes TRANSCRIPT as env var to python3. Line 49 reads os.environ[\"TRANSCRIPT\"] instead of shell interpolation. No \"$TRANSCRIPT\" in Python heredoc block. bash -n passes. Python AST parse succeeds.",
+      "design_section": "## Client Integration in Renderer\n\nA ~25-line Python function inserted into `tmux-claude-status` before the existing bridge-file read. The script uses an unquoted heredoc (`<< PYEOF`) with shell variable interpolation. The fix passes $TRANSCRIPT via environment variable instead of direct interpolation to eliminate shell injection risk.",
+      "files_expected": ["scripts/tmux-claude-status"]
+    },
+    "TS-40": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Add @app.error(401) JSON handler to server",
+      "acceptance_criteria": "server.py contains @app.error(401) handler that sets content_type to application/json and returns {\"error\": \"invalid_or_missing_api_key\"}. Handler placed before @app.error(404). test_error_handlers_registered asserts 401. New unit test for 401 handler. WSGI test asserts Content-Type. All tests pass.",
+      "design_section": "## Interface / API Design\n\n### Authentication\n\nWhen `--api-key-file` is provided:\n- `/quota` requires `X-API-Key` header matching the file contents\n- Comparison uses `hmac.compare_digest()` (timing-safe)\n- Missing or wrong key returns 401\n- `/health` is exempt\n\n**Auth failure (401):**\n```json\n{\"error\": \"invalid_or_missing_api_key\"}\n```\n\nAll responses are `Content-Type: application/json`.",
+      "files_expected": ["server/tmux_status_server/server.py", "server/tests/test_server.py"]
+    }
+  }
+}
