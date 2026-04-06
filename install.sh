@@ -271,16 +271,39 @@ if [ ! -d "$INSTALL_DIR/server/" ]; then
     exit 1
 fi
 info "Installing tmux-status-server package..."
-if pip3 install "$INSTALL_DIR/server/" 2>&1; then
-    ok "Server package installed"
-else
-    warn "pip3 install failed — trying pip..."
-    if pip install "$INSTALL_DIR/server/" 2>&1; then
-        ok "Server package installed (via pip)"
+_server_installed=false
+
+# Strategy 1: pipx (cleanest — isolated venv, auto-links to ~/.local/bin/)
+if command -v pipx >/dev/null 2>&1; then
+    if pipx install --force "$INSTALL_DIR/server/" 2>&1; then
+        _server_installed=true
+        ok "Server package installed (via pipx)"
     else
-        error "Could not install server package. Ensure pip3 or pip is available."
-        exit 1
+        warn "pipx install failed, trying fallback..."
     fi
+fi
+
+# Strategy 2: dedicated venv with symlink (works on PEP 668 systems)
+if ! $_server_installed; then
+    VENV_DIR="$HOME/.local/share/tmux-status/venv"
+    info "Creating venv at $VENV_DIR..."
+    python3 -m venv "$VENV_DIR" 2>&1 && \
+    "$VENV_DIR/bin/pip" install "$INSTALL_DIR/server/" 2>&1 && \
+    ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server" && \
+    _server_installed=true && \
+    ok "Server package installed (venv + symlink)"
+fi
+
+if ! $_server_installed; then
+    error "Could not install server package."
+    echo ""
+    echo "  Modern Python (3.12+) blocks system-wide pip install (PEP 668)."
+    echo "  Install one of the following, then re-run this installer:"
+    echo ""
+    echo "    sudo apt install python3-venv    # recommended"
+    echo "    sudo apt install pipx             # alternative"
+    echo ""
+    exit 1
 fi
 
 # ── Kill old quota-poll processes ─────────────────────────────
