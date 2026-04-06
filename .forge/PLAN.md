@@ -1,90 +1,56 @@
-# Implementation Plan -- Fix Cycle 5 (ESCALATE Fixes)
+# Implementation Plan -- Fix Cycle 6
 
 ## Requirements
 
-| ID  | Requirement | Type | Priority | Source |
-|-----|-------------|------|----------|--------|
-| R31 | Status code mismatch: renderer must check `session_key_expired` not `expired` | functional (bug) | critical | TS-31 |
-| R32 | Dockerfile must not run as root -- add non-root user | non-functional (security) | critical | TS-32 |
-| R33 | Shell injection via filename in pidfile interpolation must be eliminated | non-functional (security) | high | TS-33 |
-| R34 | Context hook must use atomic writes (tmp+rename), not bare writeFileSync | non-functional (reliability) | high | TS-34 |
-| R35 | Legacy quota scripts must be removed from repo and install.sh | functional (cleanup) | high | TS-35 |
-| R37 | Server config must reject --interval values below 30 seconds | non-functional (safety) | medium | TS-37 |
-| R-NR | All 362 existing tests must continue to pass (zero regression) | non-functional (quality) | critical | constraint |
+| ID | Requirement | Type | Priority | Source |
+|----|-------------|------|----------|--------|
+| R1 | `$TRANSCRIPT` must not be shell-interpolated into the Python heredoc in `scripts/tmux-claude-status` | functional (security) | high | TS-39 |
+| R2 | The server must return `Content-Type: application/json` for 401 responses, not HTML | functional (API contract) | high | TS-40 |
+| R3 | Existing tests must continue to pass after both changes | non-functional (regression) | high | implicit |
+| R4 | New tests must cover the specific fixes to prevent regression | non-functional (testing) | high | implicit |
 
 ## Task Waves
 
-### Wave 1 (parallel -- no dependencies between tasks)
+### Wave 1 (parallel -- no dependencies between T1.1 and T1.2)
 
-#### T1.1: Fix status code mismatch AND shell injection in tmux-claude-status
-- **Requirement(s)**: R31, R33
-- **Rationale for combining**: Both modify `scripts/tmux-claude-status`. Separate tasks would create a merge conflict. Combined, the edit is still small (~15 min).
+#### T1.1: Fix $TRANSCRIPT shell interpolation in Python heredoc (TS-39)
+
+- **Requirement(s)**: R1, R3
 - **Acceptance criteria**:
-  - [ ] Line 298 case pattern includes `session_key_expired` (literal string match in the file)
-  - [ ] The case pattern on line 298 no longer contains bare `expired` as a standalone alternative (it may appear as part of `session_key_expired` or `key_expired`)
-  - [ ] Lines 22 and 27 (pidfile reads) pass the path via `sys.argv` instead of string interpolation: the python3 invocations must use `sys.argv[1]` and the shell must pass `"$pidfile"` as a positional argument
-  - [ ] No occurrence of `open('$pidfile')` or `open("$pidfile")` remains in the file
-  - [ ] The script remains executable (`test -x scripts/tmux-claude-status` returns 0)
-  - [ ] `bash -n scripts/tmux-claude-status` exits 0 (no syntax errors)
-- **Expected files**: `scripts/tmux-claude-status`
+  - [ ] Line 46 of `scripts/tmux-claude-status` passes TRANSCRIPT as an environment variable to python3: the line reads `eval "$(TRANSCRIPT="$TRANSCRIPT" python3 << PYEOF`
+  - [ ] Line 49 of `scripts/tmux-claude-status` reads from `os.environ` instead of shell interpolation: the line reads `transcript = os.environ["TRANSCRIPT"]`
+  - [ ] The string `"$TRANSCRIPT"` (with dollar sign inside quotes) does NOT appear anywhere in the Python heredoc block (lines 47-254)
+  - [ ] `os` is imported within the heredoc (already present on line 47 -- verify it remains)
+  - [ ] Running `bash -n scripts/tmux-claude-status` exits 0 (no syntax errors)
+  - [ ] Running `python3 -c "import ast; ast.parse(open('/dev/stdin').read())"` against the extracted Python block between PYEOF markers parses without SyntaxError
+- **Expected files**: `scripts/tmux-claude-status` (modify lines 46 and 49 only)
+- **Estimated scope**: small (2-line change)
+
+#### T1.2: Add @app.error(401) handler to server (TS-40)
+
+- **Requirement(s)**: R2, R3, R4
+- **Acceptance criteria**:
+  - [ ] `server/tmux_status_server/server.py` contains an `@app.error(401)` handler function
+  - [ ] The 401 error handler sets `response.content_type` to `"application/json"`
+  - [ ] The 401 error handler returns `json.dumps({"error": "invalid_or_missing_api_key"})`
+  - [ ] The handler is placed before the existing `@app.error(404)` handler (between line 118 and the 404 block)
+  - [ ] In `server/tests/test_server.py`, the `test_error_handlers_registered` test asserts `401 in errors` (currently only checks 404 and 500)
+  - [ ] A new unit test exists that calls `errors[401](mock_err)` and asserts the returned JSON contains `{"error": "invalid_or_missing_api_key"}`
+  - [ ] The existing WSGI integration test `test_401_response_content_type_is_json` is updated to assert `resp.content_type` starts with `"application/json"` (currently it only checks body text contains the error string)
+  - [ ] Running `python3 -m pytest server/tests/test_server.py` passes with 0 failures
+- **Expected files**: `server/tmux_status_server/server.py` (add 4 lines), `server/tests/test_server.py` (modify/add ~10 lines)
 - **Estimated scope**: small
 
-#### T1.2: Add non-root user to Dockerfile
-- **Requirement(s)**: R32
-- **Acceptance criteria**:
-  - [ ] `server/Dockerfile` contains a `RUN` instruction that creates a user (e.g., `useradd -r -s /usr/sbin/nologin appuser` or equivalent)
-  - [ ] `server/Dockerfile` contains a `USER appuser` directive (or whatever username was created)
-  - [ ] The `USER` directive appears after `RUN pip install` and before `ENTRYPOINT`
-  - [ ] `server/tests/test_deploy.py` contains a test class or test method that verifies the Dockerfile has a `USER` directive specifying a non-root user
-  - [ ] `python3 -m pytest server/tests/test_deploy.py -v` passes with 0 failures
-- **Expected files**: `server/Dockerfile`, `server/tests/test_deploy.py`
-- **Estimated scope**: small
-
-#### T1.3: Make context hook use atomic writes
-- **Requirement(s)**: R34
-- **Acceptance criteria**:
-  - [ ] `scripts/tmux-status-context-hook.js` does NOT contain a bare `writeFileSync(bridgePath, ...)` call that writes directly to the final path
-  - [ ] The file contains a write to a temporary path (e.g., `bridgePath + '.tmp'` or similar) followed by `renameSync` to the final `bridgePath`
-  - [ ] `node -c scripts/tmux-status-context-hook.js` exits 0 (no syntax errors)
-  - [ ] The script remains executable (`test -x scripts/tmux-status-context-hook.js` returns 0)
-- **Expected files**: `scripts/tmux-status-context-hook.js`
-- **Estimated scope**: small
-
-#### T1.4: Remove legacy quota scripts from repo and install.sh
-- **Requirement(s)**: R35
-- **Acceptance criteria**:
-  - [ ] `scripts/tmux-status-quota-fetch` does not exist (verified by `test ! -f scripts/tmux-status-quota-fetch`)
-  - [ ] `scripts/tmux-status-quota-poll` does not exist (verified by `test ! -f scripts/tmux-status-quota-poll`)
-  - [ ] `install.sh` SCRIPTS array does not contain `tmux-status-quota-fetch`
-  - [ ] `install.sh` SCRIPTS array does not contain `tmux-status-quota-poll`
-  - [ ] `bash -n install.sh` exits 0 (no syntax errors)
-  - [ ] The install.sh SCRIPTS array still contains the 5 remaining scripts: `tmux-claude-status`, `tmux-git-status`, `tmux-status-apply-config`, `tmux-status-session`, `tmux-status-context-hook.js`
-- **Expected files**: `scripts/tmux-status-quota-fetch` (deleted), `scripts/tmux-status-quota-poll` (deleted), `install.sh`
-- **Estimated scope**: small
-
-#### T1.5: Add interval lower bound validation in server config
-- **Requirement(s)**: R37
-- **Acceptance criteria**:
-  - [ ] `server/tmux_status_server/config.py` `parse_args()` function rejects `--interval` values less than 30 with a parser error (calls `parser.error(...)`)
-  - [ ] `parse_args(["--interval", "29"])` raises `SystemExit` (argparse parser.error behavior)
-  - [ ] `parse_args(["--interval", "30"])` succeeds and returns `args.interval == 30`
-  - [ ] `parse_args(["--interval", "1"])` raises `SystemExit`
-  - [ ] `server/tests/test_config.py` contains at least one test that verifies `--interval 29` is rejected
-  - [ ] `server/tests/test_config.py` contains at least one test that verifies `--interval 30` is accepted
-  - [ ] `python3 -m pytest server/tests/test_config.py -v` passes with 0 failures
-- **Expected files**: `server/tmux_status_server/config.py`, `server/tests/test_config.py`
-- **Estimated scope**: small
-
-### Wave 2 (depends on all Wave 1 tasks)
+### Wave 2 (depends on Wave 1)
 
 #### T2.1: Full regression test run
-- **Depends on**: T1.1, T1.2, T1.3, T1.4, T1.5
-- **Requirement(s)**: R-NR
+
+- **Requirement(s)**: R3
+- **Depends on**: T1.1, T1.2
 - **Acceptance criteria**:
-  - [ ] Running the full test suite (all tests under `server/tests/`) passes with 0 failures and at least 362 tests
+  - [ ] `python3 -m pytest server/tests/` passes with 0 failures
   - [ ] `bash -n scripts/tmux-claude-status` exits 0
-  - [ ] `bash -n install.sh` exits 0
-  - [ ] `node -c scripts/tmux-status-context-hook.js` exits 0
+  - [ ] `bash -n scripts/tmux-git-status` exits 0 (unchanged but verify no collateral)
 - **Expected files**: none (verification only)
 - **Estimated scope**: small
 
@@ -92,58 +58,42 @@
 
 | Requirement | Tasks | Coverage |
 |-------------|-------|----------|
-| R31: Status code mismatch | T1.1 | full |
-| R32: Dockerfile runs as root | T1.2 | full |
-| R33: Shell injection via filename | T1.1 | full |
-| R34: Non-atomic writeFileSync | T1.3 | full |
-| R35: Legacy scripts still shipped | T1.4 | full |
-| R37: No interval lower bound | T1.5 | full |
-| R-NR: Zero regression | T2.1 | full |
+| R1: No $TRANSCRIPT shell interpolation | T1.1 | full |
+| R2: 401 returns JSON not HTML | T1.2 | full |
+| R3: No regressions | T1.1, T1.2, T2.1 | full |
+| R4: New test coverage for fixes | T1.2 | full |
 
-## Test Strategy
-
-- **T1.1**: Verified by grep/content checks (no dedicated unit test needed; the fix is a string literal change and a shell argument passing change). `bash -n` confirms syntax.
-- **T1.2**: New test(s) in `test_deploy.py` check for USER directive. Full pytest run confirms no regression.
-- **T1.3**: `node -c` syntax check confirms JS validity. Grep confirms atomic pattern (tmp + rename).
-- **T1.4**: File existence checks (negative) and grep on install.sh SCRIPTS array.
-- **T1.5**: New test(s) in `test_config.py` verify interval rejection. Full pytest run confirms no regression.
-- **T2.1**: Full suite run catches any cross-cutting regressions.
-
-## Resumption Points
-
-After each wave, the codebase is in a consistent, testable state:
-
-- **After Wave 1**: All 6 fixes are applied independently. Each file change is self-contained. If interrupted mid-wave, any completed task's changes are valid on their own -- no task in Wave 1 depends on another Wave 1 task.
-- **After Wave 2**: Full regression validated. Ready for commit.
-
-**If interrupted during Wave 1**: Check which tasks are done by running their acceptance criteria. Resume the remaining Wave 1 tasks (they are independent).
-
-## Risk Register
+## Risks
 
 | Risk | Impact | Mitigation |
-|------|--------|-----------|
-| T1.1 case pattern change breaks other status values (blocked, rate_limited, etc.) | High -- quota status display broken for all error states | Acceptance criteria explicitly verify the full case pattern retains all other values. The change only adds `session_key_expired` and removes bare `expired`. |
-| T1.2 USER directive placement breaks pip install (if placed before RUN pip) | Medium -- Docker build fails | Acceptance criteria require USER after pip install and before ENTRYPOINT. |
-| T1.4 removing scripts breaks something that imports/references them | Medium -- broken install or runtime | The install.sh already has a "kill old quota-poll" migration block (lines 240-244); that block references `tmux-status-quota-poll` via pgrep pattern, not the script file itself, so removal is safe. The renderer (`tmux-claude-status`) does not reference these scripts. |
-| T1.5 interval validation breaks existing tests that use low intervals | Medium -- test regression | Review existing test_config.py tests: `test_custom_interval` uses 60 (above 30, safe). `test_all_args_combined` uses 60 (safe). No existing test uses an interval below 30. |
-| T1.1 sys.argv refactor breaks the line-27 cwd read if not updated symmetrically | High -- Claude session detection fails silently | Acceptance criteria require BOTH line 22 and line 27 to be updated. |
+|------|--------|------------|
+| T1.1: Env var not visible inside heredoc on all bash versions | Renderer outputs nothing; Claude status line goes blank | The `VAR=val command` syntax is POSIX sh -- universally supported. Verify with `bash -n`. |
+| T1.1: `os.environ["TRANSCRIPT"]` raises KeyError if env var missing | Renderer crashes silently (exit 0 per convention) | This would only happen if the bash lines above fail to find a transcript, in which case the script already exits on line 43. The env var is always set when the heredoc executes. |
+| T1.2: Bottle error handler signature mismatch | 401 returns 500 instead | The handler signature `def error401(err)` matches existing 404/500 handlers exactly. |
+| T1.2: webtest may not exercise Bottle error handlers in same pipeline | Test passes but production still returns HTML | The existing WSGI tests for auth already return 401 via `abort()` -- extending them to check content_type exercises the real Bottle pipeline. |
 
 ## Scope Boundaries
 
-**IN scope**:
-- The 6 specific fixes described in the stories (TS-31, TS-32, TS-33, TS-34, TS-35, TS-37)
-- New tests for T1.2 and T1.5 (required to verify the fixes)
-- Full regression run
+**IN scope:**
+- Fixing the 2 specific ESCALATE items (TS-39, TS-40) as described
+- Updating existing tests to cover the fixes
+- Adding minimal new tests for the 401 handler
 
-**OUT of scope**:
-- Any refactoring beyond the minimum needed for each fix
-- Adding tests for T1.1/T1.3/T1.4 beyond syntax checks (the fixes are trivial string/pattern changes)
-- Updating CLAUDE.md or README to reflect removed scripts
-- Updating uninstall.sh to stop removing legacy scripts (it handles missing files gracefully)
-- Any other ESCALATE items not listed in the 6 stories above
+**OUT of scope:**
+- Quoting the entire heredoc (`<< 'PYEOF'`) -- this would require auditing all variable references and is a larger change (noted in TS-39 Option 1 but user chose Option 2)
+- Refactoring the check_auth hook to avoid `abort()` (TS-40 Option 2 -- rejected)
+- Adding error handlers for other HTTP status codes (e.g., 405, 403)
+- Any changes to other scripts, the quota fetcher, or the context hook
 
 ## Deviation Log
 
 | Task | Planned | Actual | Impact | Decision |
 |------|---------|--------|--------|----------|
-| (empty -- will be filled during execution) | | | | |
+| (none yet) | | | | |
+
+## Resumption State
+
+- **Status**: Plan created, no tasks started
+- **Next**: T1.1 and T1.2 can begin in parallel immediately
+- **Blockers**: None
+- **Key decisions**: User chose env-var approach for TS-39 (Option 2) and error-handler approach for TS-40 (Option 1)
