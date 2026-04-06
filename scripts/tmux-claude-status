@@ -43,10 +43,10 @@ TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
 [ -z "$TRANSCRIPT" ] && exit 0
 
 # ── Parse model, context usage, and effort from transcript ─────
-eval "$(python3 << PYEOF
+eval "$(TRANSCRIPT="$TRANSCRIPT" python3 << PYEOF
 import re, json, shlex, os, time, glob, urllib.request
 
-transcript = "$TRANSCRIPT"
+transcript = os.environ["TRANSCRIPT"]
 model = ""
 used_pct = 0
 effort = "auto"
