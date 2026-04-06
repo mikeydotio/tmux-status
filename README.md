@@ -197,7 +197,7 @@ The overlay is sourced at the end of your tmux.conf, so it wins on status-bar op
 - **node** (used by the Claude Code statusLine hook)
 
 **Optional** (for quota display):
-- **curl_cffi** (`pip3 install curl-cffi`) — needed by the quota fetcher
+- **curl_cffi** (`pip3 install curl-cffi`) — needed by the quota server
 
 Works on both **macOS** and **Linux**.
 
@@ -227,37 +227,77 @@ Line 0 of the status bar shows Claude Code session metadata. There are three dat
 
 **Quota bars** (optional, requires setup):
 - Quota display shows 5-hour and 7-day API utilization from claude.ai
-- Requires a session key and the quota polling daemon (see below)
+- The installer runs an HTTP quota server locally at `localhost:7850`; other machines can point at it as clients
+- Only requires a session key file and `curl_cffi` on the server machine
 - Without it, quota bars are simply omitted from the display
 
 When the active pane isn't running Claude, line 0 is empty (a blank spacer line).
 
 ### Quota Display Setup (Optional)
 
-To enable the 5-hour and 7-day quota bars:
+The quota system uses an HTTP server that scrapes claude.ai and serves data to the status bar renderer. The installer sets this up automatically on `localhost:7850`.
 
-1. **Install curl_cffi** (needed to bypass Cloudflare):
-   ```bash
-   pip3 install curl-cffi
-   ```
+#### 1. Install curl_cffi (server machine only)
 
-2. **Create a session key file** at `~/.config/tmux-status/claude-usage-key.json`:
-   ```json
-   {"sessionKey": "sk-ant-...", "expiresAt": "2026-05-01T00:00:00Z"}
-   ```
-   Get your session key from your browser's cookies on claude.ai (the `sessionKey` cookie).
+```bash
+pip3 install curl-cffi
+```
 
-3. **Start the polling daemon**:
-   ```bash
-   nohup tmux-status-quota-poll > /dev/null 2>&1 &
-   ```
-   The daemon fetches quota data every 5 minutes (configurable via `QUOTA_REFRESH_PERIOD` in `settings.conf`; set to `0` to disable polling). To run it persistently, add it to your shell rc or a systemd/launchd service.
+#### 2. Create a session key file
 
-4. **Test it manually** (one-shot fetch):
-   ```bash
-   tmux-status-quota-fetch
-   cat ~/.cache/tmux-status/claude-quota.json
-   ```
+At `~/.config/tmux-status/claude-usage-key.json` (permissions must be `600`):
+
+```json
+{"sessionKey": "sk-ant-...", "expiresAt": "2026-05-01T00:00:00Z"}
+```
+
+Get your session key from your browser's cookies on claude.ai (the `sessionKey` cookie).
+
+```bash
+chmod 600 ~/.config/tmux-status/claude-usage-key.json
+```
+
+#### 3. Verify
+
+```bash
+curl -s http://127.0.0.1:7850/health   # {"status":"ok",...}
+curl -s http://127.0.0.1:7850/quota    # quota JSON with five_hour/seven_day
+```
+
+The server runs as a systemd user unit (Linux) or launchd agent (macOS):
+
+```bash
+# Linux
+systemctl --user status tmux-status-server
+# macOS
+launchctl list | grep tmux-status-server
+```
+
+#### Client Mode (multiple machines)
+
+To show quota on machines that don't have the session key, point them at a central server. On each **client** machine, edit `~/.config/tmux-status/settings.conf`:
+
+```bash
+QUOTA_SOURCE=http://<server-ip>:7850
+QUOTA_API_KEY=my-secret-key        # if server requires auth
+QUOTA_CACHE_TTL=30                 # seconds; reduces requests over network
+```
+
+Clients don't need `curl_cffi` or the session key — they only need `tmux-status` installed.
+
+On the **server** machine, bind to all interfaces and enable API key auth. Create a systemd override:
+
+```bash
+systemctl --user edit tmux-status-server
+```
+
+```ini
+[Service]
+ExecStart=
+ExecStart=%h/.local/bin/tmux-status-server --host 0.0.0.0 --api-key-file %h/.config/tmux-status/quota-api-key
+```
+
+Write the same shared secret to `~/.config/tmux-status/quota-api-key` on the server and `QUOTA_API_KEY` in `settings.conf` on each client.
 
 ## Update
 
