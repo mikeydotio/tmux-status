@@ -92,6 +92,27 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
+# ── Branch check ──────────────────────────────────────────────
+# The installer expects the repo to be on 'main'. If the local checkout
+# is on a different branch, later steps (e.g. server/ package install)
+# will fail because expected files won't exist.
+_current_branch=$(git -C "$INSTALL_DIR" branch --show-current 2>/dev/null || echo "unknown")
+if [ "$_current_branch" != "main" ]; then
+    warn "Local repo is on branch '$_current_branch', not 'main'"
+    echo "  The installer expects the 'main' branch. Some files may be missing."
+    echo "  To fix:  cd $INSTALL_DIR && git checkout main && git pull"
+    echo ""
+    if [ -t 0 ]; then
+        read -rp "  Continue anyway? [y/N] " _reply
+        if [[ ! "$_reply" =~ ^[Yy] ]]; then
+            info "Aborted. Switch to 'main' and re-run the installer."
+            exit 0
+        fi
+    else
+        warn "Non-interactive mode — continuing, but errors may follow."
+    fi
+fi
+
 # ── Install scripts to ~/.local/bin/ ───────────────────────────
 mkdir -p "$BIN_DIR"
 info "Symlinking scripts to $BIN_DIR..."
@@ -243,12 +264,18 @@ case ":$PATH:" in
 esac
 
 # ── Install server package ────────────────────────────────────
+if [ ! -d "$INSTALL_DIR/server/" ]; then
+    error "server/ directory not found in $INSTALL_DIR"
+    echo "  This usually means the repo is on the wrong branch (current: ${_current_branch:-unknown})."
+    echo "  To fix:  cd $INSTALL_DIR && git checkout main && git pull"
+    exit 1
+fi
 info "Installing tmux-status-server package..."
-if pip3 install "$INSTALL_DIR/server/" 2>/dev/null; then
+if pip3 install "$INSTALL_DIR/server/" 2>&1; then
     ok "Server package installed"
 else
     warn "pip3 install failed — trying pip..."
-    if pip install "$INSTALL_DIR/server/" 2>/dev/null; then
+    if pip install "$INSTALL_DIR/server/" 2>&1; then
         ok "Server package installed (via pip)"
     else
         error "Could not install server package. Ensure pip3 or pip is available."
