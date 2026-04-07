@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A 3-line tmux status bar for Claude Code developers. Displays Claude session metadata (model, effort, context %, quota), filesystem path with git status, and a window tab bar — without touching keybindings or preferences.
+A 4-line tmux status bar for Claude Code developers. Displays Claude session metadata (model, effort, context %, quota, token cost), filesystem path with git status, and a window tab bar — without touching keybindings or preferences.
 
 ## Development
 
@@ -22,9 +22,9 @@ The system has three independent data pipelines that feed into tmux's status bar
 
 ### Rendering (tmux calls scripts every 5s via `status-interval`)
 
-- **`overlay/status.conf`** — The only file sourced by the user's tmux.conf. Defines a 3-line status bar where lines 0 and 1 call shell scripts via `#(...)`, and line 2 is the relocated default tmux status format.
-- **`scripts/tmux-claude-status`** (Bash/Python) — Renders line 0. Walks the process tree from `#{pane_pid}` to find a Claude process, reads the session `.jsonl` transcript (last 512KB, reverse) for model/effort, reads bridge files for context % and quota. Outputs nothing when the pane isn't running Claude.
-- **`scripts/tmux-git-status`** (Bash) — Renders line 1. Takes `#{pane_current_path}`, collapses `$HOME` to `~`, shows branch name, dirty/clean state, ahead/behind counts.
+- **`overlay/status.conf`** — The only file sourced by the user's tmux.conf. Defines a 4-line status bar where lines 0–2 call shell scripts via `#(...)`, and line 3 is the relocated default tmux status format.
+- **`scripts/tmux-claude-status`** (Bash/Python) — Renders lines 0 and 1 (called with `model` or `quota` mode argument). Walks the process tree from `#{pane_pid}` to find a Claude process, reads the session `.jsonl` transcript (last 512KB, reverse) for model/effort, reads bridge files for context % and quota, calculates session and daily token cost. Outputs nothing when the pane isn't running Claude. Effort is detected from JSONL `/effort` command output first, then `~/.claude/settings.json` `effortLevel`, defaulting to "auto".
+- **`scripts/tmux-git-status`** (Bash) — Renders line 2. Takes `#{pane_current_path}`, collapses `$HOME` to `~`, shows branch name, dirty/clean state, ahead/behind counts.
 - **`scripts/tmux-status-apply-config`** (Bash) — Runs once on overlay source. Reads `settings.conf` to apply clock format and optional top hostname banner.
 
 ### Context Window Tracking (real-time, via Claude Code hook)
@@ -49,13 +49,14 @@ The system has three independent data pipelines that feed into tmux's status bar
 | `~/.config/tmux-status/claude-usage-key.json` | Session key for quota API |
 | `~/.cache/tmux-status/claude-ctx-*.json` | Context bridge files (written by hook) |
 | `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by renderer from server response) |
+| `~/.cache/tmux-status/claude-daily-cost.json` | Daily token cost cache (60s TTL, recomputed from all today's JSONLs) |
 
 ## Conventions
 
 - **Atomic writes**: All bridge/cache files use temp-file + rename to avoid partial reads.
 - **Silent failure**: Scripts exit 0 and output nothing when data is unavailable (no Claude running, no quota key, etc.).
 - **Color palette**: 256-color codes throughout. Gradient bars shift blue→green→yellow→orange→red as usage increases. Segment labels use a fixed pastel palette (see README for reference table).
-- **tmux string formatting**: Line 0 and 1 use `#(script args)` shell expansion. Line 2 is the verbatim default tmux status format template relocated from `status-format[0]`.
+- **tmux string formatting**: Lines 0–2 use `#(script args)` shell expansion. Line 3 is the verbatim default tmux status format template relocated from `status-format[0]`.
 
 ## Task Tracking
 

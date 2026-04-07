@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # tmux-claude-status — Claude Code session info for tmux status bar
 #
-# Displays model name, effort level, context usage %, and API quota
-# for the Claude Code session running in the given tmux pane.
-# Outputs nothing when the active pane is not running Claude Code.
+# Displays model name, effort level, context usage %, API quota, and
+# estimated token cost for the Claude Code session running in the given
+# tmux pane.  Outputs nothing when the active pane is not running Claude.
 #
-# Usage: tmux-claude-status <pane_pid>
-# Called by tmux via: #(~/.local/bin/tmux-claude-status "#{pane_pid}")
+# Usage: tmux-claude-status <pane_pid> [model|quota]
+#   model  — line 0: model (effort) │ Ctx: bar pct%
+#   quota  — line 1: quota bars │ $session / $daily
+# Called by tmux via: #(~/.local/bin/tmux-claude-status "#{pane_pid}" model)
 
 PANE_PID="$1"
+LINE_MODE="${2:-model}"
 [ -z "$PANE_PID" ] && exit 0
 [ -z "$HOME" ] && HOME=$(eval echo ~)
 CLAUDE_DIR="${HOME}/.claude"
@@ -42,14 +45,15 @@ PROJECT_DIR="${CLAUDE_DIR}/projects/${PROJECT_DIR_NAME}"
 TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
 [ -z "$TRANSCRIPT" ] && exit 0
 
-# ── Parse model, context usage, and effort from transcript ─────
+# ── Parse model, context, effort, quota, and cost from transcript ─
 eval "$(TRANSCRIPT="$TRANSCRIPT" python3 << PYEOF
 import re, json, shlex, os, time, glob, urllib.request
 
 transcript = os.environ["TRANSCRIPT"]
 model = ""
 used_pct = 0
-effort = "auto"
+effort = ""
+has_thinking = False
 
 with open(transcript, "rb") as f:
     f.seek(0, 2)
@@ -74,12 +78,18 @@ for line in reversed(data.strip().split("\n")):
     if not conversation_id and "sessionId" in d:
         conversation_id = d["sessionId"]
 
-    # Parse model from the most recent assistant message
+    # Parse model from the most recent assistant message + detect thinking
     if not found_model and d.get("type") == "assistant":
         msg = d.get("message", {})
         if isinstance(msg, dict) and "model" in msg:
             model = msg["model"]
             found_model = True
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                has_thinking = any(
+                    isinstance(c, dict) and c.get("type") == "thinking"
+                    for c in content
+                )
 
     # Parse effort from the most recent /effort command output
     if not found_effort and d.get("type") == "user":
@@ -92,6 +102,21 @@ for line in reversed(data.strip().split("\n")):
                     effort = m.group(1)
                     found_effort = True
                     break
+
+# Fallback: read effortLevel from ~/.claude/settings.json
+if not found_effort:
+    try:
+        _settings = json.load(open(os.path.join(os.path.expanduser("~"), ".claude", "settings.json")))
+        _el = _settings.get("effortLevel", "")
+        if _el:
+            effort = _el
+            found_effort = True
+    except:
+        pass
+
+# Final fallback
+if not effort:
+    effort = "auto"
 
 # Read context % from bridge file (written by statusline hook, authoritative)
 # Check tmux-status path first, fall back to legacy coderig path.
@@ -232,15 +257,114 @@ if key_expires_at:
     except:
         pass
 
+# ── Cost calculation ──────────────────────────────────────────
+PRICING = {
+    "opus":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
+    "sonnet": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
+    "haiku":  {"input": 1.0,  "output": 5.0,  "cache_write": 1.25,  "cache_read": 0.10},
+}
+
+def _model_family(model_name):
+    m = model_name.lower()
+    if "opus" in m: return "opus"
+    if "haiku" in m: return "haiku"
+    return "sonnet"
+
+def _calc_cost_file(path):
+    """Sum token costs across all assistant messages in a JSONL file."""
+    cost = 0.0
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    if d.get("type") != "assistant":
+                        continue
+                    msg = d.get("message", {})
+                    if not isinstance(msg, dict):
+                        continue
+                    usage = msg.get("usage")
+                    mdl = msg.get("model", "")
+                    if not usage or not mdl:
+                        continue
+                    prices = PRICING[_model_family(mdl)]
+                    cost += (
+                        usage.get("input_tokens", 0) * prices["input"]
+                        + usage.get("output_tokens", 0) * prices["output"]
+                        + usage.get("cache_creation_input_tokens", 0) * prices["cache_write"]
+                        + usage.get("cache_read_input_tokens", 0) * prices["cache_read"]
+                    ) / 1_000_000
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return cost
+
+# Session cost: current transcript + its subagents
+session_cost = _calc_cost_file(transcript)
+_transcript_stem = os.path.splitext(os.path.basename(transcript))[0]
+_subagents_dir = os.path.join(os.path.dirname(transcript), _transcript_stem, "subagents")
+if os.path.isdir(_subagents_dir):
+    for _sa in glob.glob(os.path.join(_subagents_dir, "*.jsonl")):
+        session_cost += _calc_cost_file(_sa)
+
+# Daily cost: cached with 60s TTL
+_daily_cache = os.path.join(_home, ".cache", "tmux-status", "claude-daily-cost.json")
+daily_cost = 0.0
+_daily_fresh = False
+try:
+    _dc = json.load(open(_daily_cache))
+    if time.time() - _dc.get("timestamp", 0) < 60:
+        daily_cost = _dc.get("daily_cost", 0.0)
+        _daily_fresh = True
+except Exception:
+    pass
+
+if not _daily_fresh:
+    from datetime import datetime as _DT
+    _today_start = _DT.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    _projects_dir = os.path.join(_home, ".claude", "projects")
+    if os.path.isdir(_projects_dir):
+        for _root, _dirs, _files in os.walk(_projects_dir):
+            for _fname in _files:
+                if not _fname.endswith(".jsonl"):
+                    continue
+                _fpath = os.path.join(_root, _fname)
+                try:
+                    if os.stat(_fpath).st_mtime >= _today_start:
+                        daily_cost += _calc_cost_file(_fpath)
+                except Exception:
+                    continue
+    try:
+        _dc_dir = os.path.dirname(_daily_cache)
+        os.makedirs(_dc_dir, exist_ok=True)
+        _tmp = _daily_cache + ".tmp"
+        with open(_tmp, "w") as f:
+            json.dump({"daily_cost": round(daily_cost, 2), "timestamp": time.time()}, f)
+        os.replace(_tmp, _daily_cache)
+    except Exception:
+        pass
+
+def _fmt_cost(c):
+    if c >= 100:
+        return f"{c:.0f}"
+    elif c >= 10:
+        return f"{c:.1f}"
+    else:
+        return f"{c:.2f}"
+
 print("MODEL=" + shlex.quote(model))
 print("USED_PCT=" + str(used_pct))
 print("EFFORT=" + shlex.quote(effort))
+print("HAS_THINKING=" + ("1" if has_thinking else "0"))
 print("QUOTA_STATUS=" + shlex.quote(quota_status))
 print("QUOTA_5H_PCT=" + shlex.quote(str(five_hour_pct)))
 print("QUOTA_5H_REMAIN=" + shlex.quote(fmt_reset(five_hour_reset)))
 print("QUOTA_7D_PCT=" + shlex.quote(str(seven_day_pct)))
 print("QUOTA_7D_REMAIN=" + shlex.quote(fmt_reset(seven_day_reset)))
 print("KEY_EXPIRY_WARN=" + ("1" if key_expiry_warn else "0"))
+print("SESSION_COST=" + shlex.quote(_fmt_cost(session_cost)))
+print("DAILY_COST=" + shlex.quote(_fmt_cost(daily_cost)))
 PYEOF
 )"
 [ -z "$MODEL" ] && exit 0
@@ -286,55 +410,60 @@ bar_char() {
     echo "#[fg=colour${colors[$idx]}]${chars[$idx]}"
 }
 
-CTX_BAR=$(bar_char "$USED_PCT")
-
-# Quota values from bridge file (set by Python block above)
-QUOTA_5H_BAR=$(bar_char "$QUOTA_5H_PCT")
-QUOTA_7D_BAR=$(bar_char "$QUOTA_7D_PCT")
-
-# Determine quota text color: red on error/expiry, normal otherwise
-QUOTA_COLOR="colour7"
-case "$QUOTA_STATUS" in
-    session_key_expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
-    *) [ "${KEY_EXPIRY_WARN:-0}" = "1" ] && QUOTA_COLOR="colour196" ;;
-esac
-
 # ── Segment colors ─────────────────────────────────────────────
 # Pastel palette for each segment; bar chars retain their own percentage colors.
 C_MODEL="colour117"   # soft sky blue
 C_CTX="colour150"     # sage green
 C_5H="colour223"      # light peach/orange
 C_7D="colour186"      # soft wheat
+C_COST="colour183"    # light lavender
 
-# Override quota colors on error/expiry
-if [ "$QUOTA_COLOR" = "colour196" ]; then
-    C_5H="colour196"
-    C_7D="colour196"
-fi
+# ── Output (mode-dependent) ───────────────────────────────────
+if [ "$LINE_MODE" = "model" ]; then
+    # Line 0: Model (effort) │ Ctx: bar pct%
+    CTX_BAR=$(bar_char "$USED_PCT")
 
-# ── Output ─────────────────────────────────────────────────────
-# Format quota pct display: "X" stays as "X", numeric gets "%"
-fmt_quota_pct() {
-    if [ "$1" = "X" ]; then
-        echo "X"
-    else
-        echo "${1}%"
-    fi
-}
-QUOTA_5H_DISPLAY=$(fmt_quota_pct "$QUOTA_5H_PCT")
-QUOTA_7D_DISPLAY=$(fmt_quota_pct "$QUOTA_7D_PCT")
+    EFFORT_DISPLAY="$EFFORT"
+    [ "${HAS_THINKING:-0}" = "1" ] && [ "$EFFORT" = "auto" ] && EFFORT_DISPLAY="auto+"
 
-# Build output — omit quota sections if no key configured
-if [ "$QUOTA_STATUS" = "no_key" ] || [ "$QUOTA_STATUS" = "none" ]; then
     printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%%" \
         "$short_model" \
-        "$EFFORT" \
+        "$EFFORT_DISPLAY" \
         "$CTX_BAR" "$USED_PCT"
-else
-    printf " #[fg=${C_MODEL}]%s #[fg=colour8](#[fg=${C_MODEL}]%s#[fg=colour8]) #[fg=colour8]│ #[fg=${C_CTX}]Ctx: %s #[fg=${C_CTX}]%s%% #[fg=colour8]│ #[fg=${C_5H}]%s: %s #[fg=${C_5H}]%s #[fg=colour8]│ #[fg=${C_7D}]%s: %s #[fg=${C_7D}]%s" \
-        "$short_model" \
-        "$EFFORT" \
-        "$CTX_BAR" "$USED_PCT" \
-        "$QUOTA_5H_REMAIN" "$QUOTA_5H_BAR" "$QUOTA_5H_DISPLAY" \
-        "$QUOTA_7D_REMAIN" "$QUOTA_7D_BAR" "$QUOTA_7D_DISPLAY"
+
+elif [ "$LINE_MODE" = "quota" ]; then
+    # Line 1: Quota bars │ $session / $daily
+    QUOTA_5H_BAR=$(bar_char "$QUOTA_5H_PCT")
+    QUOTA_7D_BAR=$(bar_char "$QUOTA_7D_PCT")
+
+    # Determine quota text color: red on error/expiry, normal otherwise
+    QUOTA_COLOR="colour7"
+    case "$QUOTA_STATUS" in
+        session_key_expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
+        *) [ "${KEY_EXPIRY_WARN:-0}" = "1" ] && QUOTA_COLOR="colour196" ;;
+    esac
+
+    # Override quota segment colors on error/expiry
+    if [ "$QUOTA_COLOR" = "colour196" ]; then
+        C_5H="colour196"
+        C_7D="colour196"
+    fi
+
+    # Format quota pct display: "X" stays as "X", numeric gets "%"
+    fmt_quota_pct() {
+        if [ "$1" = "X" ]; then echo "X"; else echo "${1}%"; fi
+    }
+    QUOTA_5H_DISPLAY=$(fmt_quota_pct "$QUOTA_5H_PCT")
+    QUOTA_7D_DISPLAY=$(fmt_quota_pct "$QUOTA_7D_PCT")
+
+    COST_SEG="#[fg=colour8]│ #[fg=${C_COST}]\$${SESSION_COST} #[fg=colour8]/ #[fg=${C_COST}]\$${DAILY_COST}"
+
+    if [ "$QUOTA_STATUS" = "no_key" ] || [ "$QUOTA_STATUS" = "none" ]; then
+        printf " %s" "$COST_SEG"
+    else
+        printf " #[fg=${C_5H}]%s: %s #[fg=${C_5H}]%s #[fg=colour8]│ #[fg=${C_7D}]%s: %s #[fg=${C_7D}]%s %s" \
+            "$QUOTA_5H_REMAIN" "$QUOTA_5H_BAR" "$QUOTA_5H_DISPLAY" \
+            "$QUOTA_7D_REMAIN" "$QUOTA_7D_BAR" "$QUOTA_7D_DISPLAY" \
+            "$COST_SEG"
+    fi
 fi

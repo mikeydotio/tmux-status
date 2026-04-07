@@ -14,7 +14,8 @@ INSTALL_DIR="${TMUX_STATUS_DIR:-$HOME/projects/tmux-status}"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
 SOURCE_MARKER="tmux-status/overlay/status.conf"
-COMMENT_MARKER="tmux-status: 3-line status bar"
+COMMENT_MARKER="tmux-status: 4-line status bar"
+COMMENT_MARKER_LEGACY="tmux-status: 3-line status bar"
 
 # Scripts that were symlinked
 SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux-status-quota-fetch tmux-status-quota-poll)
@@ -60,7 +61,7 @@ TMUX_CONF=$(detect_tmux_conf)
 if [ -n "$TMUX_CONF" ]; then
     info "Removing source line from $TMUX_CONF..."
     # Remove the comment line and the source-file line (portable sed via temp file)
-    grep -v -F "$COMMENT_MARKER" "$TMUX_CONF" | grep -v -F "$SOURCE_MARKER" > "$TMUX_CONF.tmp"
+    grep -v -F "$COMMENT_MARKER" "$TMUX_CONF" | grep -v -F "$COMMENT_MARKER_LEGACY" | grep -v -F "$SOURCE_MARKER" > "$TMUX_CONF.tmp"
     mv "$TMUX_CONF.tmp" "$TMUX_CONF"
     ok "Removed source line from $TMUX_CONF"
 else

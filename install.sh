@@ -222,7 +222,7 @@ else
     [ -s "$TMUX_CONF" ] && [ "$(tail -c1 "$TMUX_CONF" | xxd -p)" != "0a" ] && echo "" >> "$TMUX_CONF"
     cat >> "$TMUX_CONF" << TMUXLINE
 
-# tmux-status: 3-line status bar (https://github.com/mikeydotio/tmux-status)
+# tmux-status: 4-line status bar (https://github.com/mikeydotio/tmux-status)
 source-file $INSTALL_DIR/overlay/status.conf
 TMUXLINE
     ok "Added source line to $TMUX_CONF"

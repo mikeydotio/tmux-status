@@ -1,6 +1,6 @@
 # tmux-status
 
-A 3-line tmux status bar for Claude Code developers. Shows Claude session info, git status, and a clean window bar — without touching your keybindings or preferences.
+A 4-line tmux status bar for Claude Code developers. Shows Claude session info (model/effort/context, quota/cost), git status, and a clean window bar — without touching your keybindings or preferences.
 
 ## Preview
 
@@ -170,7 +170,7 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 ## What It Sets (and What It Doesn't)
 
 **Sets** (status bar and optional banner):
-- 3-line status bar layout and formatting
+- 4-line status bar layout and formatting
 - Window tab styling (blue borders, yellow activity, bold active)
 - Status-left (hostname) and status-right (clock)
 - Activity monitoring
