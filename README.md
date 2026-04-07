@@ -285,19 +285,22 @@ QUOTA_CACHE_TTL=30                 # seconds; reduces requests over network
 
 Clients don't need `curl_cffi` or the session key — they only need `tmux-status` installed.
 
-On the **server** machine, bind to all interfaces and enable API key auth. Create a systemd override:
+On the **server** machine, re-run the installer with `--server`:
 
 ```bash
-systemctl --user edit tmux-status-server
+./install.sh --server
 ```
 
-```ini
-[Service]
-ExecStart=
-ExecStart=%h/.local/bin/tmux-status-server --host 0.0.0.0 --api-key-file %h/.config/tmux-status/quota-api-key
-```
+This binds to `0.0.0.0`, auto-generates an API key, and prints the client config snippet. Options:
 
-Write the same shared secret to `~/.config/tmux-status/quota-api-key` on the server and `QUOTA_API_KEY` in `settings.conf` on each client.
+| Flag | Effect |
+|------|--------|
+| `--server` | Bind to all interfaces (required) |
+| `--no-auth` | Skip API key (trusted LAN) |
+| `--api-key <key>` | Use a specific key instead of auto-generating |
+| `--port <port>` | Use a custom port (default: 7850) |
+
+Re-running `--server` is idempotent — it keeps the existing API key unless `--api-key` provides a new one.
 
 ## Update
 

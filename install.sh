@@ -23,6 +23,32 @@ SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node ~/.local/bin/tmux-status-context-hook.js'
 
+# ── Parse flags ───────────────────────────────────────────────
+SERVER_MODE=false
+SERVER_NO_AUTH=false
+SERVER_API_KEY=""
+SERVER_PORT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --server)   SERVER_MODE=true; shift ;;
+        --no-auth)  SERVER_NO_AUTH=true; shift ;;
+        --api-key)  SERVER_API_KEY="${2:-}"; shift 2 ;;
+        --port)     SERVER_PORT="${2:-}"; shift 2 ;;
+        *)          printf '\033[1;31m[tmux-status]\033[0m Unknown option: %s\n' "$1" >&2; exit 1 ;;
+    esac
+done
+
+if $SERVER_NO_AUTH && ! $SERVER_MODE; then
+    printf '\033[1;31m[tmux-status]\033[0m --no-auth requires --server\n' >&2; exit 1
+fi
+if [ -n "$SERVER_API_KEY" ] && ! $SERVER_MODE; then
+    printf '\033[1;31m[tmux-status]\033[0m --api-key requires --server\n' >&2; exit 1
+fi
+if $SERVER_NO_AUTH && [ -n "$SERVER_API_KEY" ]; then
+    printf '\033[1;31m[tmux-status]\033[0m --no-auth and --api-key are mutually exclusive\n' >&2; exit 1
+fi
+
 # ── Helpers ────────────────────────────────────────────────────
 info()  { printf '\033[1;34m[tmux-status]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[1;33m[tmux-status]\033[0m %s\n' "$1"; }
@@ -283,7 +309,21 @@ if command -v pipx >/dev/null 2>&1; then
     fi
 fi
 
-# Strategy 2: dedicated venv with symlink (works on PEP 668 systems)
+# Strategy 2: uv (fast, handles venv creation automatically)
+if ! $_server_installed && command -v uv >/dev/null 2>&1; then
+    VENV_DIR="$HOME/.local/share/tmux-status/venv"
+    info "Creating venv at $VENV_DIR (via uv)..."
+    if uv venv --clear "$VENV_DIR" 2>&1 && \
+       uv pip install --python "$VENV_DIR/bin/python" "$INSTALL_DIR/server/" 2>&1; then
+        ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server"
+        _server_installed=true
+        ok "Server package installed (uv + venv)"
+    else
+        warn "uv install failed, trying fallback..."
+    fi
+fi
+
+# Strategy 3: dedicated venv with symlink (works on PEP 668 systems)
 if ! $_server_installed; then
     VENV_DIR="$HOME/.local/share/tmux-status/venv"
     info "Creating venv at $VENV_DIR..."
@@ -313,6 +353,34 @@ if pgrep -f 'tmux-status-quota-poll' >/dev/null 2>&1; then
     ok "Stopped old tmux-status-quota-poll processes (replaced by tmux-status-server)"
 fi
 
+# ── Server mode: API key + args ──────────────────────────────
+API_KEY_FILE="$CONFIG_DIR/quota-api-key"
+_server_api_key=""
+_server_args=""
+
+if $SERVER_MODE; then
+    _server_args="--host 0.0.0.0"
+    [ -n "$SERVER_PORT" ] && _server_args="$_server_args --port $SERVER_PORT"
+
+    if ! $SERVER_NO_AUTH; then
+        if [ -n "$SERVER_API_KEY" ]; then
+            _server_api_key="$SERVER_API_KEY"
+            printf '%s' "$_server_api_key" > "$API_KEY_FILE"
+            chmod 600 "$API_KEY_FILE"
+            ok "API key written to $API_KEY_FILE"
+        elif [ -s "$API_KEY_FILE" ]; then
+            _server_api_key=$(cat "$API_KEY_FILE")
+            info "Using existing API key from $API_KEY_FILE"
+        else
+            _server_api_key=$(python3 -c "import secrets; print(secrets.token_hex(16))")
+            printf '%s' "$_server_api_key" > "$API_KEY_FILE"
+            chmod 600 "$API_KEY_FILE"
+            ok "Generated API key at $API_KEY_FILE"
+        fi
+        _server_args="$_server_args --api-key-file $API_KEY_FILE"
+    fi
+fi
+
 # ── Install and start daemon (systemd/launchd) ───────────────
 OS_TYPE="$(uname -s)"
 info "Setting up tmux-status-server daemon ($OS_TYPE)..."
@@ -323,8 +391,12 @@ if [ "$OS_TYPE" = "Linux" ]; then
     SYSTEMD_UNIT="$SYSTEMD_DIR/tmux-status-server.service"
     mkdir -p "$SYSTEMD_DIR"
     cp "$INSTALL_DIR/server/deploy/tmux-status-server.service" "$SYSTEMD_UNIT"
+    if [ -n "$_server_args" ]; then
+        sed -i "s|^ExecStart=%h/.local/bin/tmux-status-server$|ExecStart=%h/.local/bin/tmux-status-server $_server_args|" "$SYSTEMD_UNIT"
+    fi
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable --now tmux-status-server 2>/dev/null || true
+    systemctl --user restart tmux-status-server 2>/dev/null || \
+        systemctl --user enable --now tmux-status-server 2>/dev/null || true
     ok "systemd user unit installed and started"
 elif [ "$OS_TYPE" = "Darwin" ]; then
     # launchd plist
@@ -332,19 +404,59 @@ elif [ "$OS_TYPE" = "Darwin" ]; then
     LAUNCHD_PLIST="$LAUNCHD_DIR/io.mikey.tmux-status-server.plist"
     mkdir -p "$LAUNCHD_DIR"
     cp "$INSTALL_DIR/server/deploy/io.mikey.tmux-status-server.plist" "$LAUNCHD_PLIST"
-    sed -i '' "s|~/.local/bin/tmux-status-server|$HOME/.local/bin/tmux-status-server|g" "$LAUNCHD_PLIST"
+    # Expand ~ and inject server args into ProgramArguments
+    python3 -c "
+import plistlib
+path = '$LAUNCHD_PLIST'
+with open(path, 'rb') as f:
+    pl = plistlib.load(f)
+args = ['$HOME/.local/bin/tmux-status-server']
+extra = '$_server_args'.split()
+if extra:
+    args.extend(extra)
+pl['ProgramArguments'] = args
+with open(path, 'wb') as f:
+    plistlib.dump(pl, f)
+"
+    launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load "$LAUNCHD_PLIST" 2>/dev/null || true
     ok "launchd plist installed and loaded"
 else
     warn "Unknown OS ($OS_TYPE) — skipping daemon setup"
-    echo "  You can run the server manually: tmux-status-server"
+    echo "  You can run the server manually: tmux-status-server $_server_args"
 fi
 
 # ── Done ───────────────────────────────────────────────────────
+_port="${SERVER_PORT:-7850}"
 echo ""
-ok "tmux-status installed successfully!"
-echo ""
-echo "  The quota server is running at http://127.0.0.1:7850"
+
+if $SERVER_MODE; then
+    ok "tmux-status installed in SERVER mode!"
+    echo ""
+    echo "  Quota server listening on 0.0.0.0:$_port"
+    if ! $SERVER_NO_AUTH; then
+        echo "  API key: $_server_api_key"
+        echo "  Key file: $API_KEY_FILE"
+    else
+        warn "No authentication configured (--no-auth)"
+    fi
+    echo ""
+    echo "  ── Client setup ──"
+    echo "  On each client machine, edit ~/.config/tmux-status/settings.conf:"
+    echo ""
+    echo "    QUOTA_SOURCE=http://<this-server-ip>:$_port"
+    if ! $SERVER_NO_AUTH; then
+        echo "    QUOTA_API_KEY=$_server_api_key"
+    fi
+    echo "    QUOTA_CACHE_TTL=30"
+    echo ""
+    echo "  Ensure port $_port is open in your firewall."
+else
+    ok "tmux-status installed successfully!"
+    echo ""
+    echo "  The quota server is running at http://127.0.0.1:$_port"
+fi
+
 echo ""
 echo "  Check server status:"
 if [ "$OS_TYPE" = "Linux" ]; then
@@ -352,7 +464,7 @@ if [ "$OS_TYPE" = "Linux" ]; then
 elif [ "$OS_TYPE" = "Darwin" ]; then
     echo "    launchctl list | grep tmux-status-server"
 else
-    echo "    curl -s http://127.0.0.1:7850/health"
+    echo "    curl -s http://127.0.0.1:$_port/health"
 fi
 echo ""
 echo "  Reload tmux config:"
