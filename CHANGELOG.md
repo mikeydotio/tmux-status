@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.0] - 2026-04-07
+
+### Added
+- add token cost tracking and split status into 4-line layout (2268633)
+
+_[manual]_
+
 ## [v2.0.0] - 2026-04-07
 
 ### Added
