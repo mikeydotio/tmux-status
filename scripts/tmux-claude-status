@@ -141,6 +141,7 @@ quota_bridge = os.path.join(_home, ".cache", "tmux-status", "claude-quota.json")
 quota_source = "http://127.0.0.1:7850"
 quota_api_key = ""
 quota_cache_ttl = 30
+quota_max_stale = 300
 try:
     with open(_settings_file) as _sf:
         for _line in _sf:
@@ -161,6 +162,11 @@ try:
             elif _k == "QUOTA_CACHE_TTL":
                 try:
                     quota_cache_ttl = int(_v)
+                except ValueError:
+                    pass
+            elif _k == "QUOTA_MAX_STALE":
+                try:
+                    quota_max_stale = int(_v)
                 except ValueError:
                     pass
 except Exception:
@@ -228,6 +234,17 @@ if quota_bridge:
             five_hour_pct = "X"
             seven_day_pct = "X"
     except:
+        pass
+
+# Override to "stale" if the cache file is too old and server was unreachable
+if quota_bridge and quota_status == "ok" and quota_max_stale > 0:
+    try:
+        _cache_age = time.time() - os.stat(quota_bridge).st_mtime
+        if _cache_age > quota_max_stale:
+            quota_status = "stale"
+            five_hour_pct = "X"
+            seven_day_pct = "X"
+    except Exception:
         pass
 
 def fmt_reset(iso_str):
@@ -439,7 +456,7 @@ elif [ "$LINE_MODE" = "quota" ]; then
     # Determine quota text color: red on error/expiry, normal otherwise
     QUOTA_COLOR="colour7"
     case "$QUOTA_STATUS" in
-        session_key_expired|blocked|error|rate_limited|key_expired) QUOTA_COLOR="colour196" ;;
+        session_key_expired|blocked|error|rate_limited|key_expired|stale) QUOTA_COLOR="colour196" ;;
         *) [ "${KEY_EXPIRY_WARN:-0}" = "1" ] && QUOTA_COLOR="colour196" ;;
     esac
 

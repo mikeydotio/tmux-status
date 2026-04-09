@@ -21,7 +21,7 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 # Scripts to symlink into ~/.local/bin/
 SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-STATUSLINE_CMD='node ~/.local/bin/tmux-status-context-hook.js'
+STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 
 # ── Parse flags ───────────────────────────────────────────────
 SERVER_MODE=false
@@ -203,6 +203,10 @@ if [ -f "$_settings" ]; then
         printf '\n# Cache TTL in seconds. 0 = always fetch (localhost). 30 = remote.\nQUOTA_CACHE_TTL=0\n' >> "$_settings"
         _migrated=true
     fi
+    if ! grep -q '^QUOTA_MAX_STALE=' "$_settings" && ! grep -q '^# QUOTA_MAX_STALE=' "$_settings"; then
+        printf '\n# Max age (seconds) of quota cache before showing stale indicators. 0 = disabled.\nQUOTA_MAX_STALE=300\n' >> "$_settings"
+        _migrated=true
+    fi
     if grep -q '^TOP_BANNER=' "$_settings" && ! grep -q '^SHOW_TOP_BANNER=' "$_settings"; then
         _val=$(grep '^TOP_BANNER=' "$_settings" | head -1 | cut -d= -f2)
         printf '\n# Migrated from TOP_BANNER (renamed)\nSHOW_TOP_BANNER=%s\n' "$_val" >> "$_settings"
@@ -250,13 +254,31 @@ except: pass
 import json
 path = '$CLAUDE_SETTINGS'
 d = json.load(open(path))
-d['statusLine'] = {'type': 'command', 'command': 'node ~/.local/bin/tmux-status-context-hook.js'}
+d['statusLine'] = {'type': 'command', 'command': 'node \"\$HOME/.local/bin/tmux-status-context-hook.js\"'}
 with open(path, 'w') as f:
     json.dump(d, f, indent=2)
     f.write('\n')
 " 2>/dev/null && ok "Claude Code statusLine hook configured" || warn "Could not update $CLAUDE_SETTINGS"
     elif echo "$existing_sl" | grep -qF "tmux-status-context-hook"; then
         info "Claude Code statusLine hook already configured"
+    elif echo "$existing_sl" | grep -qF "coderig-statusline"; then
+        # Legacy hook from coderig — replace with tmux-status hook
+        info "Replacing legacy coderig-statusline hook with tmux-status-context-hook..."
+        python3 -c "
+import json
+path = '$CLAUDE_SETTINGS'
+d = json.load(open(path))
+d['statusLine'] = {'type': 'command', 'command': 'node \"\$HOME/.local/bin/tmux-status-context-hook.js\"'}
+with open(path, 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\n')
+" 2>/dev/null && ok "Replaced legacy statusLine hook" || warn "Could not update $CLAUDE_SETTINGS"
+        # Back up the old coderig-statusline.js if it exists as a regular file
+        _legacy_hook="$BIN_DIR/coderig-statusline.js"
+        if [ -f "$_legacy_hook" ] && [ ! -L "$_legacy_hook" ]; then
+            mv "$_legacy_hook" "${_legacy_hook}.tmux-status.bak"
+            info "Backed up legacy $_legacy_hook"
+        fi
     else
         warn "Claude Code statusLine already configured with a different command:"
         echo "    $existing_sl"
@@ -266,7 +288,7 @@ with open(path, 'w') as f:
 else
     # No settings.json — create a minimal one
     if [ -d "$HOME/.claude" ]; then
-        echo '{"statusLine": {"type": "command", "command": "node ~/.local/bin/tmux-status-context-hook.js"}}' | python3 -m json.tool > "$CLAUDE_SETTINGS" 2>/dev/null \
+        echo '{"statusLine": {"type": "command", "command": "node \"$HOME/.local/bin/tmux-status-context-hook.js\""}}' | python3 -m json.tool > "$CLAUDE_SETTINGS" 2>/dev/null \
             && ok "Created $CLAUDE_SETTINGS with statusLine hook" \
             || warn "Could not create $CLAUDE_SETTINGS"
     else
