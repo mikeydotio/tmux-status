@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.2] - 2026-04-09
+
+_[force]_
+
 ## [v2.1.1] - 2026-04-08
 
 ### Maintenance
