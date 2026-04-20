@@ -19,7 +19,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
 SOURCE_MARKER="tmux-status/overlay/status.conf"
 
 # Scripts to symlink into ~/.local/bin/
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux_claude_model.py)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 
