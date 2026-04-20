@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.3] - 2026-04-20
+
+### Fixed
+- display "5h" instead of "?" when no active session, "X" for errors (f44b2f2)
+
+_[manual]_
+
 ## [v2.1.2] - 2026-04-09
 
 _[force]_
