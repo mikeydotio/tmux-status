@@ -14,6 +14,7 @@ SHOW_TOP_BANNER=true
 TOP_BANNER_COLOR=208
 
 # ── Load user settings ─────────────────────────────────────────
+# shellcheck source=/dev/null  # user settings file path is dynamic
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
 # ── Sanitize ───────────────────────────────────────────────────

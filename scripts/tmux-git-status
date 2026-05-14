@@ -34,6 +34,7 @@ elif [ -n "$(git -C "$dir" ls-files --others --exclude-standard "$dir" 2>/dev/nu
     dirty="dirty"
 fi
 
+# shellcheck disable=SC1083  # @{upstream} is valid git ref syntax, not shell brace expansion
 ahead_behind=$(git -C "$dir" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
 if [ -n "$ahead_behind" ]; then
     ahead=$(echo "$ahead_behind" | cut -f1)
