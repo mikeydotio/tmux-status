@@ -272,7 +272,7 @@ def fmt_reset(iso_str):
         return "?"
 
 def fmt_remain(iso_str, status, full_label):
-    # ok + null resets_at = window is full (countdown hasn't started)
+    # ok + null resets_at = window is full (countdown has not started)
     # stale = we have old data, genuinely uncertain
     # anything else = broken upstream
     if status == "ok":
