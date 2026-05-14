@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    name: Bash syntax gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n on every bash script
+        run: tests/unit/test_syntax.sh
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck on bash scripts
+        run: |
+          set -e
+          find . \
+            -path ./.git -prune -o \
+            -path '*/venv/*' -prune -o \
+            -path '*/node_modules/*' -prune -o \
+            -type f -print \
+          | while IFS= read -r f; do
+              case "$f" in
+                *.sh) echo "$f" ;;
+                *)
+                  first=$(head -n 1 -- "$f" 2>/dev/null || true)
+                  case "$first" in
+                    '#!'*bash*) echo "$f" ;;
+                  esac
+                  ;;
+              esac
+            done \
+          | xargs shellcheck --severity=warning
+
+  python-unit:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run pytest
+        run: python -m pytest tests/unit
