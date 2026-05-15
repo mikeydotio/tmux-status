@@ -16,3 +16,8 @@ server/build/
 .forge/verdicts.jsonl
 
 # .storyhook/ is version-controlled project data — do not ignore
+
+# Claude Code's worktree feature creates transient git worktrees here.
+# They show up as gitlinks (mode 160000) if accidentally staged, which
+# produces "No url found for submodule path" warnings in CI checkout.
+.claude/worktrees/
