@@ -10,7 +10,7 @@ jobs:
     name: Bash syntax gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: bash -n on every bash script
         run: tests/unit/test_syntax.sh
 
@@ -18,7 +18,7 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run shellcheck on bash scripts
         run: |
           set -e
@@ -44,8 +44,8 @@ jobs:
     name: Python unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Run unittest suite
