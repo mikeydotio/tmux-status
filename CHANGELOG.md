@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.3] - 2026-05-26
+
+### Added
+- show yellow [cmd] chip when tmux prefix is armed (544f4e0)
+
+### Fixed
+- remove apostrophe that broke bash parse of embedded heredoc (e5ce852)
+- display "5h" instead of "?" when no active session, "X" for errors (f44b2f2)
+
+### Testing
+- add bash -n syntax gate and GitHub Actions workflow (6e56776)
+
+### Maintenance
+- bump actions/checkout to v5 and actions/setup-python to v6 for Node 24 (7d92c70)
+- untrack transient .claude/worktrees gitlinks and ignore them (dd18f1a)
+- fix shellcheck warnings and switch python tests to stdlib unittest (ab68f0e)
+
+_[manual]_
+
 ## [v2.1.3] - 2026-04-20
 
 ### Fixed
