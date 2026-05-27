@@ -22,9 +22,9 @@ TOP_BANNER_COLOR=208
 
 # ── Apply clock format ─────────────────────────────────────────
 if [ "$CLOCK_24H" = "true" ]; then
-    tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%H:%M#[fg=colour4]」'
+    tmux set -g status-right '#{?client_prefix,#[fg=colour11][cmd] ,}#[fg=colour4]「#[fg=colour7]%H:%M#[fg=colour4]」'
 else
-    tmux set -g status-right '#[fg=colour4]「#[fg=colour7]%-l:%M#[fg=colour4]」'
+    tmux set -g status-right '#{?client_prefix,#[fg=colour11][cmd] ,}#[fg=colour4]「#[fg=colour7]%-l:%M#[fg=colour4]」'
 fi
 
 # ── Apply top banner ──────────────────────────────────────────
