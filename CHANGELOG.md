@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [v2.1.3] - 2026-05-26
+## [v2.2.0] - 2026-05-26
 
 ### Added
 - show yellow [cmd] chip when tmux prefix is armed (544f4e0)
@@ -19,13 +19,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - bump actions/checkout to v5 and actions/setup-python to v6 for Node 24 (7d92c70)
 - untrack transient .claude/worktrees gitlinks and ignore them (dd18f1a)
 - fix shellcheck warnings and switch python tests to stdlib unittest (ab68f0e)
-
-_[manual]_
-
-## [v2.1.3] - 2026-04-20
-
-### Fixed
-- display "5h" instead of "?" when no active session, "X" for errors (f44b2f2)
 
 _[manual]_
 
