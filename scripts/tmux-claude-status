@@ -49,7 +49,7 @@ TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
 # Location of this script's real file (after symlink resolution is done
 # on the Python side). Consumed by the heredoc to import tmux_claude_model.
 export _TMUX_STATUS_SCRIPT="${BASH_SOURCE[0]:-$0}"
-eval "$(TRANSCRIPT="$TRANSCRIPT" python3 << PYEOF
+eval "$(TRANSCRIPT="$TRANSCRIPT" python3 << 'PYEOF'
 import re, json, shlex, os, sys, time, glob, urllib.request, pathlib
 
 _script_dir = pathlib.Path(os.environ["_TMUX_STATUS_SCRIPT"]).resolve().parent
@@ -133,10 +133,13 @@ if conversation_id:
                        os.path.join(_home, ".cache", "coderig")]:
         bridge = os.path.join(_cache_dir, f"claude-ctx-{conversation_id}.json")
         try:
+            # The value is still correct however old it is — context does not
+            # change while idle, and the process-tree walk above already blanks
+            # the whole line when no Claude process is running in this pane. So
+            # there is no staleness to guard against here.
             bd = json.load(open(bridge))
-            if time.time() - bd.get("timestamp", 0) < 1800:
-                used_pct = bd.get("used_pct", used_pct)
-                break
+            used_pct = bd.get("used_pct", used_pct)
+            break
         except:
             continue
 
@@ -200,7 +203,11 @@ def _maybe_fetch_quota(source_url, api_key, cache_ttl, cache_path):
         cache_dir = os.path.dirname(cache_path)
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
-        tmp = cache_path + '.tmp'
+        # Per-process temp name: tmux runs the model and quota renderers
+        # concurrently, so a shared temp file would let them clobber each other
+        # mid-write and publish a partial cache. A unique name keeps os.replace
+        # truly atomic.
+        tmp = f"{cache_path}.{os.getpid()}.tmp"
         with open(tmp, 'wb') as f:
             f.write(data)
         os.replace(tmp, cache_path)
@@ -217,8 +224,23 @@ seven_day_pct = 0
 seven_day_reset = ""
 key_expires_at = ""
 if quota_bridge:
-    try:
-        qd = json.load(open(quota_bridge))
+    # The cache can be mid-rewrite when we read it. Retry a few times to ride
+    # out a transient partial read; only if it is still unreadable do we degrade
+    # to "stale" (visible markers) instead of the default "none", which would
+    # hide the quota segment entirely.
+    qd = None
+    for _attempt in range(3):
+        try:
+            with open(quota_bridge) as _qf:
+                qd = json.load(_qf)
+            break
+        except Exception:
+            time.sleep(0.03)
+    if qd is None:
+        quota_status = "stale"
+        five_hour_pct = "X"
+        seven_day_pct = "X"
+    else:
         quota_status = qd.get("status", "none")
         key_expires_at = qd.get("expires_at", "")
         if quota_status == "ok":
@@ -240,8 +262,6 @@ if quota_bridge:
         else:
             five_hour_pct = "X"
             seven_day_pct = "X"
-    except:
-        pass
 
 # Override to "stale" if the cache file is too old and server was unreachable
 if quota_bridge and quota_status == "ok" and quota_max_stale > 0:
@@ -372,7 +392,7 @@ if not _daily_fresh:
     try:
         _dc_dir = os.path.dirname(_daily_cache)
         os.makedirs(_dc_dir, exist_ok=True)
-        _tmp = _daily_cache + ".tmp"
+        _tmp = f"{_daily_cache}.{os.getpid()}.tmp"  # per-process; see quota cache note
         with open(_tmp, "w") as f:
             json.dump({"daily_cost": round(daily_cost, 2), "timestamp": time.time()}, f)
         os.replace(_tmp, _daily_cache)
