@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.2.1] - 2026-06-03
+
+### Fixed
+- keep context % and quota visible when a session idles (0083f99)
+
+_[manual]_
+
 ## [v2.2.0] - 2026-05-26
 
 ### Added
