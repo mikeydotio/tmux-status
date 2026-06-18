@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.1] - 2026-06-18
+
+### Fixed
+- restore git line and close cold-start blank after fork-free refactor (ffd03f4)
+- harden PATH so the daemon finds tmux/git under launchd (b7e530d)
+
+### Documentation
+- document the daemon poke/wake and reader-contract invariant (805a86d)
+
+### Testing
+- avoid SC2088 in integration test git assertion (de4a3f0)
+
+_[manual]_
+
 ## [v2.3.0] - 2026-06-17
 
 ### Changed
