@@ -275,6 +275,13 @@ systemctl --user status tmux-status-server tmux-status-renderd
 launchctl list | grep tmux-status
 ```
 
+The daemon refreshes on a ~5s cadence. To avoid a blank cold start on a brand-new
+pane or a freshly `/clear`'d session, structural tmux events (new window/pane/session)
+and the Claude statusLine context hook nudge the daemon (`tmux-status-poke` → SIGUSR1)
+for an immediate one-off tick, so the status fills in sub-second. These pokes fire only
+on infrequent events — never on the per-render path — so the fork-free guarantee holds
+and the steady 5s interval is unchanged.
+
 #### Client Mode (multiple machines)
 
 To show quota on machines that don't have the session key, point them at a central server. On each **client** machine, edit `~/.config/tmux-status/settings.conf`:

@@ -14,7 +14,7 @@ The project is a collection of shell (bash), Python 3, and Node.js scripts insta
 
 **Install locally:** `./install.sh` — symlinks scripts to `~/.local/bin/`, creates config at `~/.config/tmux-status/`, adds one `source-file` line to tmux.conf, configures the Claude Code statusLine hook.
 
-**Reload after changes:** `tmux source-file ~/.config/tmux/tmux.conf` (or wherever the user's tmux.conf lives).
+**Reload after changes:** `tmux source-file ~/.config/tmux/tmux.conf` (or wherever the user's tmux.conf lives). `./install.sh` now does this automatically for a running server, so a `git pull` + reinstall can't leave the in-memory `status-format` stale.
 
 **Uninstall:** `./uninstall.sh`
 
@@ -30,6 +30,11 @@ The status scripts are **thin readers**: all heavy work was moved into a backgro
 - **`scripts/tmux-claude-status`** (Bash) — Renders lines 0 and 1 (`model` / `quota` mode). Sources the per-pane cache `~/.cache/tmux-status/render/pane-<pane_pid>.env` and `printf`s the line (same `bar_char`/colors as before). Outputs nothing when the pane isn't running Claude or the cache is missing. Shows a dim `⋯` marker if the cache is older than `RENDER_MAX_STALE` (default 30s) — i.e. the daemon may be down. Does no process walking, transcript parsing, quota HTTP, or git.
 - **`scripts/tmux-git-status`** (Bash) — Renders line 2 from the same per-pane cache's `GIT_LINE` (now keyed by `#{pane_pid}`, formerly `#{pane_current_path}`).
 - **`scripts/tmux-status-apply-config`** (Bash) — Runs once on overlay source. Reads `settings.conf` to apply clock format and optional top hostname banner.
+- **`scripts/tmux-status-poke`** (Bash) — Wakes the daemon for one immediate tick by sending `SIGUSR1` to the pid in `renderd.lock` (falls back to `pkill -f tmux-status-renderd`). Invoked ONLY on infrequent events — tmux `set-hook` for `after-new-window`/`after-split-window`/`session-created`/`client-session-changed` (in `status.conf`, run with `run-shell -b`), and the context hook after it writes the bridge file. This closes the cold-start gap (blank Claude lines on a fresh or `/clear`'d session) without adding any fork to the per-render path. Always exits 0.
+
+### Contract invariant (do not break)
+
+The daemon writes the per-pane cache keyed by **pid** (`pane-<pid>.env`); every reader invocation in `overlay/status.conf` MUST pass `#{pane_pid}`. Passing `#{pane_current_path}` (the pre-refactor git-line argument) makes the reader build a bogus cache path and silently blank that line. `tests/unit/test_status_conf_contract.sh` gates this. Because the scripts are symlinks (live-updated by `git pull`) but tmux's `status-format` is in-memory until re-sourced, `install.sh` re-sources a running server so the live config can't drift from the scripts.
 
 ### Status pre-computation (`tmux-status-renderd` daemon)
 
@@ -59,7 +64,7 @@ The status scripts are **thin readers**: all heavy work was moved into a backgro
 | `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by renderer from server response) |
 | `~/.cache/tmux-status/claude-daily-cost.json` | Daily token cost cache (60s TTL, recomputed from all today's JSONLs) |
 | `~/.cache/tmux-status/render/pane-<pid>.env` | Per-pane render cache (written by the daemon, sourced by the thin readers) |
-| `~/.cache/tmux-status/render/renderd.lock` | Render daemon `flock` singleton guard |
+| `~/.cache/tmux-status/render/renderd.lock` | Render daemon `flock` singleton guard; first line is the daemon pid (read by `tmux-status-poke`) |
 
 ## Conventions
 
