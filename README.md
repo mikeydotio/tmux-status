@@ -264,13 +264,15 @@ curl -s http://127.0.0.1:7850/health   # {"status":"ok",...}
 curl -s http://127.0.0.1:7850/quota    # quota JSON with five_hour/seven_day
 ```
 
-The server runs as a systemd user unit (Linux) or launchd agent (macOS):
+The server runs as a systemd user unit (Linux) or launchd agent (macOS). A second
+daemon, `tmux-status-renderd`, precomputes the per-pane status into a cache so the
+tmux status scripts stay fork-free (they only read the cache):
 
 ```bash
 # Linux
-systemctl --user status tmux-status-server
+systemctl --user status tmux-status-server tmux-status-renderd
 # macOS
-launchctl list | grep tmux-status-server
+launchctl list | grep tmux-status
 ```
 
 #### Client Mode (multiple machines)
