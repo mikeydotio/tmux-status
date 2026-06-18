@@ -240,9 +240,11 @@ fi
 # `source-file`. Without this, updating to a release that changed a reader's
 # argument contract would leave the live config passing the old argument — the
 # exact skew that silently blanked the git line after the fork-free refactor.
-# `tmux info` exits non-zero when no server is running (safe probe); re-sourcing
-# is idempotent (it just re-`set -g`s the same options).
-if tmux info >/dev/null 2>&1; then
+# `tmux list-sessions` exits non-zero when no server is running (safe probe —
+# and, unlike `tmux info`, its name doesn't collide with this script's info()
+# function, so ShellCheck stays quiet); re-sourcing is idempotent (it just
+# re-`set -g`s the same options).
+if tmux list-sessions >/dev/null 2>&1; then
     if tmux source-file "$TMUX_CONF" >/dev/null 2>&1; then
         ok "Reloaded running tmux config (status-format now current)"
     else
