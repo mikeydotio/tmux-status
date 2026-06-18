@@ -1,0 +1,10 @@
+[Unit]
+Description=tmux-status render daemon
+
+[Service]
+ExecStart=%h/.local/bin/tmux-status-renderd
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
