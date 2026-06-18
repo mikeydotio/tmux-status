@@ -28,6 +28,11 @@ mkdir -p "$RENDER_DIR"
 
 PANE=4242
 ENVF="$RENDER_DIR/pane-${PANE}.env"
+# Expected git line. The leading "~" is a literal in the fixture (the daemon
+# collapses $HOME to ~), not a path to expand — build it so shellcheck does not
+# read it as an intended tilde expansion (SC2088).
+TILDE='~'
+EXPECT_GIT="${TILDE}/work : main (clean)"
 
 write_cache() {  # $1 = RENDER_TS value
     cat > "$ENVF" <<EOF
@@ -59,7 +64,7 @@ git_out="$(bash "$GIT_READER" "$PANE")"
 case "$model_out" in *"Opus 4.8"*"high"*"37%"*) pass "model line content" ;; *) die "model line: $model_out" ;; esac
 case "$model_out" in *"⋯"*) die "fresh cache must NOT show stale marker: $model_out" ;; *) pass "no stale marker when fresh" ;; esac
 case "$quota_out" in *"40m"*"6%"*"64%"*'$0.06'*'$1.23'*) pass "quota line content" ;; *) die "quota line: $quota_out" ;; esac
-[ "$git_out" = "~/work : main (clean)" ] && pass "git line content" || die "git line: $git_out"
+[ "$git_out" = "$EXPECT_GIT" ] && pass "git line content" || die "git line: $git_out"
 
 # ── Test 2: cache miss renders nothing, exits 0 ────────────────
 echo "TEST 2: cache miss -> silent, exit 0..."
@@ -86,7 +91,7 @@ stale_git="$(PATH="$SHIMBIN:$PATH" bash "$GIT_READER" "$PANE")"
 # Still renders last-known content and exits 0:
 case "$stale_model" in *"Opus 4.8"*"37%"*) pass "stale: last-known model still rendered" ;; *) die "stale model: $stale_model" ;; esac
 [ "$stale_rc" -eq 0 ] && pass "stale: reader exit 0" || die "stale rc=$stale_rc"
-[ "$stale_git" = "~/work : main (clean)" ] && pass "stale: last-known git still rendered" || die "stale git: $stale_git"
+[ "$stale_git" = "$EXPECT_GIT" ] && pass "stale: last-known git still rendered" || die "stale git: $stale_git"
 # CRITICAL: no heavy tool was ever forked.
 heavy_called=""
 for cmd in git ps python3 python; do [ -e "$SHIMBIN/CALLED-$cmd" ] && heavy_called="$heavy_called $cmd"; done
