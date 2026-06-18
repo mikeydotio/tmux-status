@@ -17,3 +17,4 @@ include = ["tmux_status_server*"]
 
 [project.scripts]
 tmux-status-server = "tmux_status_server.__main__:main"
+tmux-status-renderd = "tmux_status_server.render:main"
