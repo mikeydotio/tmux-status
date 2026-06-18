@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# tmux-status-poke — wake the render daemon for an immediate tick.
+#
+# The render daemon (tmux-status-renderd) refreshes the per-pane cache on its
+# own ~5s cadence. On a brand-new pane or a freshly /clear'd Claude session the
+# cache for that pane does not exist yet, so the thin readers print nothing and
+# the Claude status lines stay blank until the next tick (up to one interval).
+#
+# This helper closes that cold-start gap: it signals the daemon (SIGUSR1, which
+# the daemon handles by running one tick right away) so the status fills in
+# sub-second instead of waiting for the poll. It is invoked ONLY on infrequent
+# structural/context events (new window/pane/session via tmux hooks, and the
+# Claude statusLine context hook) — never on the tmux per-render path — so the
+# single fork here cannot pile up under load (the fork-storm this project's
+# render daemon was built to avoid).
+#
+# The daemon records its PID on the first line of its flock file; we read it
+# there, verify the process is alive, and signal it. If the lock file is
+# missing/stale we fall back to signalling by process name. Every path exits 0
+# so a poke failure can never break the tmux hook or the Claude hook that calls
+# it.
+#
+# Usage: tmux-status-poke
+# Called by: tmux `set-hook ... run-shell -b` and tmux-status-context-hook.js
+
+[ -z "$HOME" ] && HOME=$(eval echo ~)
+LOCK="${HOME}/.cache/tmux-status/render/renderd.lock"
+
+pid=""
+if [ -f "$LOCK" ]; then
+    # The daemon writes "<pid>\n"; read only the first line.
+    IFS= read -r pid < "$LOCK" 2>/dev/null || pid=""
+fi
+
+# Accept only an all-digits PID.
+case "$pid" in
+    ''|*[!0-9]*) pid="" ;;
+esac
+
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -USR1 "$pid" 2>/dev/null && exit 0
+fi
+
+# Fallback: a missing/stale lock file or a dead recorded PID. Signal by name.
+pkill -USR1 -f 'tmux-status-renderd' 2>/dev/null || true
+exit 0

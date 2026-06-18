@@ -59,5 +59,20 @@ process.stdin.on('end', () => {
       }));
       fs.renameSync(tmpPath, bridgePath);
     } catch (e) {}
+
+    // Wake the render daemon so this session's status fills in immediately
+    // instead of waiting for the next ~5s tick — the precise trigger for a
+    // fresh session and for /clear (which keeps the pane but starts a new
+    // session_id). Fire-and-forget: detached, output-discarded, errors
+    // swallowed, so the status bar never depends on the poke succeeding.
+    try {
+      const { spawn } = require('child_process');
+      const child = spawn(
+        path.join(homeDir, '.local', 'bin', 'tmux-status-poke'),
+        [], { detached: true, stdio: 'ignore' }
+      );
+      child.on('error', () => {});
+      child.unref();
+    } catch (e) {}
   } catch (e) {}
 });

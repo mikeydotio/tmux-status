@@ -21,7 +21,7 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 # Scripts to symlink into ~/.local/bin/
 # (tmux_claude_model.py is no longer symlinked: the thin readers don't import it
 #  and the render daemon uses its own vendored copy inside the server package.)
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 
@@ -232,6 +232,24 @@ else
 source-file $INSTALL_DIR/overlay/status.conf
 TMUXLINE
     ok "Added source line to $TMUX_CONF"
+fi
+
+# ── Reload the running tmux server ─────────────────────────────
+# The scripts are symlinks (a `git pull` updates them instantly) but tmux's
+# status-format lives in the running server's memory and only refreshes on
+# `source-file`. Without this, updating to a release that changed a reader's
+# argument contract would leave the live config passing the old argument — the
+# exact skew that silently blanked the git line after the fork-free refactor.
+# `tmux info` exits non-zero when no server is running (safe probe); re-sourcing
+# is idempotent (it just re-`set -g`s the same options).
+if tmux info >/dev/null 2>&1; then
+    if tmux source-file "$TMUX_CONF" >/dev/null 2>&1; then
+        ok "Reloaded running tmux config (status-format now current)"
+    else
+        warn "Could not reload tmux; run manually: tmux source-file $TMUX_CONF"
+    fi
+else
+    info "No running tmux server; config applies on next tmux start"
 fi
 
 # ── Configure Claude Code statusLine hook ─────────────────────

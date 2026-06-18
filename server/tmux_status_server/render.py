@@ -764,12 +764,12 @@ def render_once(home=None, owner_pid=None):
 
 
 # ── Daemon ─────────────────────────────────────────────────────────────────
-def run(interval=DEFAULT_INTERVAL, home=None):
-    """Render loop: tick every ``interval`` s, exponential backoff with no tmux."""
-    owner_pid = os.getpid()
-    shutdown = threading.Event()
-    wake = threading.Event()
+def _install_signal_handlers(shutdown, wake):
+    """Wire SIGTERM/SIGINT → ``shutdown`` and SIGUSR1 → immediate ``wake``.
 
+    Split out of ``run`` so the signal→event wiring is unit-testable on its own.
+    Must run on the main thread (``signal.signal`` requires it).
+    """
     def _sigterm(signum, _frame):
         logger.info("Received signal %d, shutting down", signum)
         shutdown.set()
@@ -782,6 +782,13 @@ def run(interval=DEFAULT_INTERVAL, home=None):
     signal.signal(signal.SIGINT, _sigterm)
     signal.signal(signal.SIGUSR1, _sigusr1)
 
+
+def _loop(interval, home, owner_pid, shutdown, wake):
+    """Render until ``shutdown``; a set ``wake`` forces an early tick.
+
+    Separated from signal installation so it can be driven with injected events
+    in tests (no real signals, no main-thread requirement).
+    """
     backoff = interval
     while not shutdown.is_set():
         try:
@@ -798,6 +805,19 @@ def run(interval=DEFAULT_INTERVAL, home=None):
         wake.wait(timeout=sleep_for)
         wake.clear()
     logger.info("renderd stopped")
+
+
+def run(interval=DEFAULT_INTERVAL, home=None):
+    """Render loop: tick every ``interval`` s, exponential backoff with no tmux.
+
+    SIGUSR1 forces an immediate tick — used by ``tmux-status-poke`` to close the
+    cold-start gap on a fresh/``/clear``'d session; SIGTERM/SIGINT shut down.
+    """
+    owner_pid = os.getpid()
+    shutdown = threading.Event()
+    wake = threading.Event()
+    _install_signal_handlers(shutdown, wake)
+    _loop(interval, home, owner_pid, shutdown, wake)
 
 
 def _parse_args(argv=None):
