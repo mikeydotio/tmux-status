@@ -24,6 +24,7 @@ INSTALL_SH = os.path.join(REPO_ROOT, "install.sh")
 CONTEXT_HOOK = os.path.join(SCRIPTS_DIR, "tmux-status-context-hook.js")
 CLAUDE_STATUS = os.path.join(SCRIPTS_DIR, "tmux-claude-status")
 DOCKERFILE = os.path.join(REPO_ROOT, "server", "Dockerfile")
+RENDER_PY = os.path.join(REPO_ROOT, "server", "tmux_status_server", "render.py")
 
 # Add server directory to path for config import
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -98,49 +99,41 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestTS33SysArgvPidfile(unittest.TestCase):
-    """Verify tmux-claude-status passes pidfile via sys.argv, not interpolation."""
+    """TS-33 shell-injection safety, re-verified for the render-daemon refactor.
+
+    Session pidfile reading moved out of the tmux-claude-status bash polyglot
+    (which used `python3 -c "..." "$pidfile"` to avoid shell interpolation) into
+    the render daemon's load_sessions(), which reads each file with
+    json.load(open(p)) where `p` comes from a glob — no shell and no subprocess,
+    so the injection vector is eliminated rather than merely mitigated.
+    """
 
     def setUp(self):
         with open(CLAUDE_STATUS) as f:
-            self.content = f.read()
-        self.lines = self.content.splitlines()
+            self.status = f.read()
+        with open(RENDER_PY) as f:
+            self.render = f.read()
 
-    def test_no_string_interpolation_of_pidfile_in_open(self):
-        """No occurrence of open('$pidfile') or open(\"$pidfile\") in the script."""
-        # These patterns would indicate shell variable interpolation inside Python
-        self.assertNotIn("open('$pidfile')", self.content)
-        self.assertNotIn('open("$pidfile")', self.content)
+    def test_status_reader_does_not_interpolate_pidfile(self):
+        """The thin reader never interpolates a shell value into a Python open()."""
+        self.assertNotIn("open('$", self.status)
+        self.assertNotIn('open("$', self.status)
 
-    def test_pid_read_uses_sys_argv(self):
-        """The pid extraction line uses sys.argv[1] to receive the pidfile path."""
-        pid_lines = [l for l in self.lines if "['pid']" in l and "python3" in l]
-        self.assertTrue(len(pid_lines) >= 1,
-                        "Expected at least one line reading pid via python3")
-        for line in pid_lines:
-            self.assertIn("sys.argv[1]", line,
-                          f"pid read should use sys.argv[1]: {line.strip()}")
+    def test_status_reader_has_no_pidfile_python(self):
+        """The thin reader no longer reads session pidfiles at all (moved to daemon)."""
+        self.assertNotIn("['pid']", self.status)
+        self.assertNotIn("['cwd']", self.status)
+        self.assertNotIn("python3 -c", self.status)
 
-    def test_cwd_read_uses_sys_argv(self):
-        """The cwd extraction line uses sys.argv[1] to receive the pidfile path."""
-        cwd_lines = [l for l in self.lines if "['cwd']" in l and "python3" in l]
-        self.assertTrue(len(cwd_lines) >= 1,
-                        "Expected at least one line reading cwd via python3")
-        for line in cwd_lines:
-            self.assertIn("sys.argv[1]", line,
-                          f"cwd read should use sys.argv[1]: {line.strip()}")
-
-    def test_pidfile_passed_as_positional_arg(self):
-        """The shell passes \"$pidfile\" as a positional argument to python3."""
-        # Look for the pattern: python3 -c "..." "$pidfile"
-        pid_lines = [l for l in self.lines
-                     if "python3 -c" in l and "pidfile" in l]
-        for line in pid_lines:
-            # After the closing quote of the python code, "$pidfile" should appear
-            self.assertRegex(
-                line.strip(),
-                r'"\s+"?\$pidfile"?',
-                f"pidfile should be passed as positional arg: {line.strip()}"
-            )
+    def test_load_sessions_reads_files_without_shell(self):
+        """Session files are read via json.load(open(...)), not via a shell/subprocess."""
+        m = re.search(r"def load_sessions\(.*?\n(.*?)\ndef ", self.render, re.S)
+        self.assertIsNotNone(m, "load_sessions not found in render.py")
+        body = m.group(1)
+        self.assertIn("json.load", body)
+        self.assertIn("open(", body)
+        self.assertNotIn("subprocess", body)
+        self.assertNotIn("os.system", body)
 
     def test_script_is_executable(self):
         """tmux-claude-status is executable."""
