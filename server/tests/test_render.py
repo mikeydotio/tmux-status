@@ -391,6 +391,23 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         self.assertNotIn("MODEL=", content)
 
 
+# ── PATH hardening (launchd/systemd minimal PATH) ──────────────────────────
+class TestEnsurePath(unittest.TestCase):
+    def test_adds_common_bin_dirs(self):
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+            render._ensure_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+            self.assertIn("/opt/homebrew/bin", parts)
+            self.assertIn("/usr/local/bin", parts)
+            self.assertIn("/usr/bin", parts)  # existing entries preserved
+
+    def test_does_not_duplicate(self):
+        with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}):
+            render._ensure_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+            self.assertEqual(parts.count("/opt/homebrew/bin"), 1)
+
+
 # ── Vendored model drift guard ─────────────────────────────────────────────
 class TestModelDrift(unittest.TestCase):
     def test_vendored_model_matches_scripts_copy(self):
