@@ -9,8 +9,10 @@ git-line port, and the cache writer/pruner. Network and tmux are never touched
 
 import json
 import os
+import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -416,6 +418,78 @@ class TestModelDrift(unittest.TestCase):
         with open(a, "rb") as fa, open(b, "rb") as fb:
             self.assertEqual(fa.read(), fb.read(),
                              "server/tmux_status_server/model.py drifted from scripts/tmux_claude_model.py")
+
+
+# ── Daemon wake / signal wiring ────────────────────────────────────────────
+def _poll(predicate, timeout=2.0):
+    """Wait until ``predicate()`` is true, yielding so pending main-thread signal
+    handlers can run. Returns the final predicate value."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestSignalWake(unittest.TestCase):
+    """The SIGUSR1 → immediate-tick path that ``tmux-status-poke`` relies on to
+    close the cold-start gap on a fresh or ``/clear``'d session."""
+
+    def setUp(self):
+        # _install_signal_handlers mutates process-global dispositions; save them.
+        self._orig = {
+            s: signal.getsignal(s)
+            for s in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)
+        }
+
+    def tearDown(self):
+        for s, h in self._orig.items():
+            signal.signal(s, h)
+
+    def test_sigusr1_sets_wake_not_shutdown(self):
+        shutdown, wake = threading.Event(), threading.Event()
+        render._install_signal_handlers(shutdown, wake)
+        os.kill(os.getpid(), signal.SIGUSR1)
+        self.assertTrue(_poll(wake.is_set), "SIGUSR1 did not set the wake event")
+        self.assertFalse(shutdown.is_set(), "SIGUSR1 must not trigger shutdown")
+
+    def test_sigterm_sets_shutdown_and_wake(self):
+        shutdown, wake = threading.Event(), threading.Event()
+        render._install_signal_handlers(shutdown, wake)
+        os.kill(os.getpid(), signal.SIGTERM)
+        self.assertTrue(_poll(shutdown.is_set), "SIGTERM did not set shutdown")
+        self.assertTrue(wake.is_set(), "SIGTERM must also wake the loop to exit promptly")
+
+    def test_loop_renders_immediately_on_wake(self):
+        """A set ``wake`` forces an early tick instead of sleeping the interval."""
+        shutdown, wake = threading.Event(), threading.Event()
+        calls = []
+        second = threading.Event()
+
+        def fake_render_once(home=None, owner_pid=None):
+            calls.append(1)
+            if len(calls) >= 2:
+                second.set()
+            return 0  # 0 ⇒ backoff path ⇒ would otherwise sleep the full interval
+
+        with mock.patch.object(render, "render_once", side_effect=fake_render_once):
+            # Huge interval: without the wake, a 2nd render would not arrive in time.
+            t = threading.Thread(
+                target=render._loop, args=(3600, None, 1234, shutdown, wake), daemon=True
+            )
+            t.start()
+            try:
+                # set() is sticky until the loop clears it → no lost-wakeup race.
+                wake.set()
+                self.assertTrue(second.wait(timeout=3.0),
+                                "wake did not force an immediate second render")
+            finally:
+                shutdown.set()
+                wake.set()
+                t.join(timeout=3.0)
+        self.assertFalse(t.is_alive(), "loop did not exit on shutdown")
+        self.assertGreaterEqual(len(calls), 2)
 
 
 if __name__ == "__main__":
