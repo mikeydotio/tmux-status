@@ -19,7 +19,9 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
 SOURCE_MARKER="tmux-status/overlay/status.conf"
 
 # Scripts to symlink into ~/.local/bin/
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux_claude_model.py)
+# (tmux_claude_model.py is no longer symlinked: the thin readers don't import it
+#  and the render daemon uses its own vendored copy inside the server package.)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 
@@ -338,6 +340,7 @@ if ! $_server_installed && command -v uv >/dev/null 2>&1; then
     if uv venv --clear "$VENV_DIR" 2>&1 && \
        uv pip install --python "$VENV_DIR/bin/python" "$INSTALL_DIR/server/" 2>&1; then
         ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server"
+        ln -sf "$VENV_DIR/bin/tmux-status-renderd" "$BIN_DIR/tmux-status-renderd"
         _server_installed=true
         ok "Server package installed (uv + venv)"
     else
@@ -352,6 +355,7 @@ if ! $_server_installed; then
     python3 -m venv "$VENV_DIR" 2>&1 && \
     "$VENV_DIR/bin/pip" install "$INSTALL_DIR/server/" 2>&1 && \
     ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server" && \
+    ln -sf "$VENV_DIR/bin/tmux-status-renderd" "$BIN_DIR/tmux-status-renderd" && \
     _server_installed=true && \
     ok "Server package installed (venv + symlink)"
 fi
@@ -448,6 +452,49 @@ else
     echo "  You can run the server manually: tmux-status-server $_server_args"
 fi
 
+# ── Install and start the render daemon (systemd/launchd) ─────
+# tmux-status-renderd precomputes per-pane status into a cache so the tmux
+# status scripts stay fork-free. Takes no arguments (no server-mode injection).
+info "Setting up tmux-status-renderd daemon ($OS_TYPE)..."
+
+if [ "$OS_TYPE" = "Linux" ]; then
+    RENDERD_SYSTEMD_DIR="$HOME/.config/systemd/user"
+    RENDERD_UNIT="$RENDERD_SYSTEMD_DIR/tmux-status-renderd.service"
+    mkdir -p "$RENDERD_SYSTEMD_DIR"
+    cp "$INSTALL_DIR/server/deploy/tmux-status-renderd.service" "$RENDERD_UNIT"
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user restart tmux-status-renderd 2>/dev/null || \
+        systemctl --user enable --now tmux-status-renderd 2>/dev/null || true
+    ok "render daemon installed and started (systemd)"
+elif [ "$OS_TYPE" = "Darwin" ]; then
+    RENDERD_LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+    RENDERD_PLIST="$RENDERD_LAUNCHD_DIR/io.mikey.tmux-status-renderd.plist"
+    mkdir -p "$RENDERD_LAUNCHD_DIR"
+    cp "$INSTALL_DIR/server/deploy/io.mikey.tmux-status-renderd.plist" "$RENDERD_PLIST"
+    # launchd does not expand ~, so rewrite ProgramArguments to an absolute path
+    python3 -c "
+import plistlib
+path = '$RENDERD_PLIST'
+with open(path, 'rb') as f:
+    pl = plistlib.load(f)
+pl['ProgramArguments'] = ['$HOME/.local/bin/tmux-status-renderd']
+with open(path, 'wb') as f:
+    plistlib.dump(pl, f)
+"
+    launchctl unload "$RENDERD_PLIST" 2>/dev/null || true
+    launchctl load "$RENDERD_PLIST" 2>/dev/null || true
+    ok "render daemon installed and loaded (launchd)"
+else
+    warn "Unknown OS ($OS_TYPE) — skipping render daemon setup"
+    echo "  You can run it manually: tmux-status-renderd"
+fi
+
+# Warm the per-pane cache so the status bar shows data immediately rather than
+# blanking until the daemon's first tick.
+if [ -x "$BIN_DIR/tmux-status-renderd" ]; then
+    "$BIN_DIR/tmux-status-renderd" --once >/dev/null 2>&1 || true
+fi
+
 # ── Done ───────────────────────────────────────────────────────
 _port="${SERVER_PORT:-7850}"
 echo ""
@@ -480,11 +527,11 @@ else
 fi
 
 echo ""
-echo "  Check server status:"
+echo "  Check server + render daemon status:"
 if [ "$OS_TYPE" = "Linux" ]; then
-    echo "    systemctl --user status tmux-status-server"
+    echo "    systemctl --user status tmux-status-server tmux-status-renderd"
 elif [ "$OS_TYPE" = "Darwin" ]; then
-    echo "    launchctl list | grep tmux-status-server"
+    echo "    launchctl list | grep tmux-status"
 else
     echo "    curl -s http://127.0.0.1:$_port/health"
 fi
