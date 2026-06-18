@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.0] - 2026-06-17
+
+### Changed
+- Eliminate the status-bar fork-storm. All heavy per-pane work (process-tree walk, transcript parsing, quota HTTP, daily-cost scan, git status) moved out of the tmux `#()` render path into a new background render daemon. The status scripts are now fork-free cache readers, so the render path can no longer pile up and pin every CPU core under load. Status-bar output is byte-for-byte unchanged.
+- `tmux-git-status` now takes `#{pane_pid}` (was `#{pane_current_path}`) so it can share the per-pane cache.
+- `tmux_claude_model.py` is no longer symlinked into `~/.local/bin` — the thin readers don't import it and the daemon vendors its own copy.
+
+### Added
+- `tmux-status-renderd` render daemon (`server/tmux_status_server/render.py`): one `ps` snapshot per tick, in-memory pane→session resolution, per-pane `.env` cache, `flock` singleton guard, launchd/systemd auto-restart, and a `--once` one-shot mode (used for tests and install cache warm-up).
+- Per-pane render cache at `~/.cache/tmux-status/render/pane-<pid>.env`, plus a dim `⋯` staleness marker on the model line when the daemon hasn't refreshed within `RENDER_MAX_STALE` (default 30s).
+- `make test` green gate: render-daemon unit tests, `flock`/deploy tests, and a render-pipeline integration test that asserts the readers do no heavy work even when the daemon is down.
+
+_[manual]_
+
 ## [v2.2.1] - 2026-06-03
 
 ### Fixed
