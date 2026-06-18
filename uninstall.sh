@@ -17,8 +17,9 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 COMMENT_MARKER="tmux-status: 4-line status bar"
 COMMENT_MARKER_LEGACY="tmux-status: 3-line status bar"
 
-# Scripts that were symlinked
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux-status-quota-fetch tmux-status-quota-poll)
+# Scripts that were symlinked (incl. legacy names + tmux_claude_model.py, which
+# older versions symlinked but the render-daemon refactor no longer installs)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-apply-config tmux-status-session tmux-status-context-hook.js tmux_claude_model.py tmux-status-quota-fetch tmux-status-quota-poll)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -68,35 +69,41 @@ else
     info "No tmux.conf found with tmux-status source line (already clean)"
 fi
 
-# ── Stop and remove daemon (systemd/launchd) ──────────────────
+# ── Stop and remove daemons (systemd/launchd) ─────────────────
 OS_TYPE="$(uname -s)"
-info "Stopping tmux-status-server daemon..."
+info "Stopping tmux-status daemons (server + renderd)..."
 
 if [ "$OS_TYPE" = "Linux" ]; then
-    # systemd user unit
-    systemctl --user stop tmux-status-server 2>/dev/null || true
-    systemctl --user disable tmux-status-server 2>/dev/null || true
-    SYSTEMD_UNIT="$HOME/.config/systemd/user/tmux-status-server.service"
-    if [ -f "$SYSTEMD_UNIT" ]; then
-        rm "$SYSTEMD_UNIT"
-        systemctl --user daemon-reload 2>/dev/null || true
-        ok "Removed systemd unit: $SYSTEMD_UNIT"
-    else
-        info "No systemd unit found (already clean)"
-    fi
+    # systemd user units
+    for _svc in tmux-status-server tmux-status-renderd; do
+        systemctl --user stop "$_svc" 2>/dev/null || true
+        systemctl --user disable "$_svc" 2>/dev/null || true
+        _unit="$HOME/.config/systemd/user/$_svc.service"
+        if [ -f "$_unit" ]; then
+            rm "$_unit"
+            ok "Removed systemd unit: $_unit"
+        fi
+    done
+    systemctl --user daemon-reload 2>/dev/null || true
 elif [ "$OS_TYPE" = "Darwin" ]; then
-    # launchd plist
-    LAUNCHD_PLIST="$HOME/Library/LaunchAgents/io.mikey.tmux-status-server.plist"
-    if [ -f "$LAUNCHD_PLIST" ]; then
-        launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
-        rm "$LAUNCHD_PLIST"
-        ok "Removed launchd plist: $LAUNCHD_PLIST"
-    else
-        info "No launchd plist found (already clean)"
-    fi
+    # launchd plists
+    for _plist in io.mikey.tmux-status-server io.mikey.tmux-status-renderd; do
+        LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$_plist.plist"
+        if [ -f "$LAUNCHD_PLIST" ]; then
+            launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+            rm "$LAUNCHD_PLIST"
+            ok "Removed launchd plist: $LAUNCHD_PLIST"
+        fi
+    done
 else
     warn "Unknown OS ($OS_TYPE) — skipping daemon teardown"
 fi
+
+# Entry-point symlinks point into the venv (not $INSTALL_DIR), so the
+# $INSTALL_DIR-targeted symlink loop below won't catch them — remove explicitly.
+for _ep in tmux-status-server tmux-status-renderd; do
+    [ -L "$BIN_DIR/$_ep" ] && rm -f "$BIN_DIR/$_ep" && info "Removed symlink: $BIN_DIR/$_ep"
+done
 
 # ── Uninstall server package ──────────────────────────────────
 info "Uninstalling tmux-status-server package..."
