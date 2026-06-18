@@ -41,6 +41,19 @@ MAX_BACKOFF = 60
 RENDER_DIRNAME = "render"
 TRANSCRIPT_TAIL_BYTES = 512000
 
+# launchd (macOS) and systemd (Linux) start daemons with a minimal PATH that
+# usually omits Homebrew/local bin dirs — so `tmux` and `git` would not resolve
+# and the daemon would see zero panes and render nothing. Make sure the common
+# locations are searched regardless of the inherited PATH.
+_EXTRA_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+
+def _ensure_path():
+    """Prepend common bin dirs (not already present) so tmux/git resolve."""
+    cur = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    missing = [d for d in _EXTRA_PATH if d not in cur]
+    os.environ["PATH"] = os.pathsep.join(missing + cur) if missing else os.environ.get("PATH", "")
+
 PRICING = {
     "opus":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
     "sonnet": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
@@ -817,6 +830,7 @@ def main():
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    _ensure_path()
     home = os.path.expanduser("~")
 
     if args.once:
