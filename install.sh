@@ -13,7 +13,35 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────
 REPO_URL="https://github.com/mikeydotio/tmux-status.git"
-INSTALL_DIR="${TMUX_STATUS_DIR:-$HOME/projects/tmux-status}"
+
+# Resolve which source tree to install FROM. Precedence:
+#   1. $TMUX_STATUS_DIR            — explicit override, always wins.
+#   2. this script's own directory — when it's a real checkout (has the overlay
+#      + server/ markers). So running `./install.sh` from a working tree deploys
+#      THAT tree, never a stale managed clone elsewhere (the footgun where a
+#      plain run silently re-pointed symlinks + rebuilt the daemon from old code).
+#   3. $HOME/projects/tmux-status  — the managed location for `curl … | bash`,
+#      where the script is piped from stdin and has no on-disk location.
+resolve_install_dir() {
+    local script_dir="$1"
+    if [ -n "${TMUX_STATUS_DIR:-}" ]; then
+        printf '%s\n' "$TMUX_STATUS_DIR"
+    elif [ -n "$script_dir" ] && [ -f "$script_dir/overlay/status.conf" ] && [ -d "$script_dir/server" ]; then
+        printf '%s\n' "$script_dir"
+    else
+        printf '%s\n' "$HOME/projects/tmux-status"
+    fi
+}
+
+# A `curl | bash` pipe leaves BASH_SOURCE unset or non-file, so SCRIPT_DIR is
+# empty there and resolve_install_dir falls through to the managed location.
+_script_src="${BASH_SOURCE[0]:-}"
+if [ -n "$_script_src" ] && [ -f "$_script_src" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$_script_src")" >/dev/null 2>&1 && pwd -P)"
+else
+    SCRIPT_DIR=""
+fi
+INSTALL_DIR="$(resolve_install_dir "$SCRIPT_DIR")"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-status"
 SOURCE_MARKER="tmux-status/overlay/status.conf"
@@ -109,7 +137,13 @@ check_tmux_version || exit 1
 ok "All dependencies satisfied (tmux $(tmux -V | sed 's/[^0-9.]//g'), python3, git)"
 
 # ── Clone or update repo ──────────────────────────────────────
-if [ -d "$INSTALL_DIR/.git" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ "$INSTALL_DIR" = "$SCRIPT_DIR" ]; then
+    # Running the installer from inside its own checkout: deploy THIS tree
+    # exactly as-is. Don't pull/clone — the user is installing what they have
+    # in front of them (deliberate local edits, a feature branch, etc.), and a
+    # surprise pull or a stale managed clone must never shadow it.
+    info "Installing from this checkout: $INSTALL_DIR"
+elif [ -d "$INSTALL_DIR/.git" ]; then
     info "Updating existing installation at $INSTALL_DIR..."
     git -C "$INSTALL_DIR" pull --ff-only || {
         warn "Could not fast-forward. Run 'cd $INSTALL_DIR && git pull' manually."
@@ -123,9 +157,10 @@ fi
 # ── Branch check ──────────────────────────────────────────────
 # The installer expects the repo to be on 'main'. If the local checkout
 # is on a different branch, later steps (e.g. server/ package install)
-# will fail because expected files won't exist.
+# will fail because expected files won't exist. Only meaningful for a git
+# checkout — a tarball/source dir without .git has no branch to check.
 _current_branch=$(git -C "$INSTALL_DIR" branch --show-current 2>/dev/null || echo "unknown")
-if [ "$_current_branch" != "main" ]; then
+if [ -d "$INSTALL_DIR/.git" ] && [ "$_current_branch" != "main" ]; then
     warn "Local repo is on branch '$_current_branch', not 'main'"
     echo "  The installer expects the 'main' branch. Some files may be missing."
     echo "  To fix:  cd $INSTALL_DIR && git checkout main && git pull"

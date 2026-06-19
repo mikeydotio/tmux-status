@@ -105,6 +105,10 @@ cd ~/projects/tmux-status
 
 ### Custom Install Location
 
+`./install.sh` installs from the checkout it lives in — clone anywhere and run it
+from there. Override the source tree explicitly with `TMUX_STATUS_DIR` (e.g. to
+reinstall a clone other than the one the script is in):
+
 ```bash
 TMUX_STATUS_DIR=~/my/custom/path ./install.sh
 ```
