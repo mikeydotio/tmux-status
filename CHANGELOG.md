@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.3] - 2026-06-19
+
+### Fixed
+- install from the script's own checkout, not a stale clone (86be61b)
+
+_[manual]_
+
 ## [v2.3.2] - 2026-06-18
 
 ### Fixed
