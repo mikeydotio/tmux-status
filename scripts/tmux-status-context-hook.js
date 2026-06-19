@@ -21,40 +21,65 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
     const session = data.session_id || '';
-    const ctx = data.context_window;
-    if (!session || !ctx) return;
+    if (!session) return;
 
-    const remaining = ctx.remaining_percentage;
-    let usedPct = ctx.used_percentage || 0;
-
-    // When autocompact is enabled, normalize to show usage relative to
-    // usable context (Claude reserves ~16.5% as an autocompact buffer).
     const homeDir = os.homedir();
-    let autoCompact = false;
-    try {
-      const claudeJson = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf8'));
-      autoCompact = claudeJson.autoCompactEnabled === true;
-    } catch (e) {}
-    // Env var override trumps the config flag
-    try {
-      const settings = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude', 'settings.json'), 'utf8'));
-      const override = settings.env?.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
-      if (override === '100') autoCompact = false;
-    } catch (e) {}
+    const bridgeDir = path.join(homeDir, '.cache', 'tmux-status');
+    const bridgePath = path.join(bridgeDir, `claude-ctx-${session}.json`);
 
-    if (autoCompact && remaining != null) {
-      const BUFFER = 16.5;
-      const usableRemaining = Math.max(0, ((remaining - BUFFER) / (100 - BUFFER)) * 100);
-      usedPct = Math.max(0, Math.min(100, Math.round(100 - usableRemaining)));
+    // The model id is in every statusLine payload — including on a fresh or
+    // /clear'd session, before any assistant reply. Carrying it in the bridge is
+    // what lets the render daemon show the Claude lines immediately instead of
+    // waiting for the first assistant message to land in the transcript (the old
+    // cause of both Claude lines going blank until work started).
+    const model = (data.model && data.model.id) || '';
+
+    // Prior bridge: used to carry used_pct when context_window is momentarily
+    // absent, and to dedupe — the statusLine hook fires often, but we only want
+    // to write + wake the daemon on an actual change or a brand-new session.
+    let prev = null;
+    try { prev = JSON.parse(fs.readFileSync(bridgePath, 'utf8')); } catch (e) {}
+
+    const ctx = data.context_window;
+    let usedPct = prev ? (prev.used_pct || 0) : 0;
+    if (ctx) {
+      const remaining = ctx.remaining_percentage;
+      usedPct = ctx.used_percentage || 0;
+
+      // When autocompact is enabled, normalize to show usage relative to
+      // usable context (Claude reserves ~16.5% as an autocompact buffer).
+      let autoCompact = false;
+      try {
+        const claudeJson = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf8'));
+        autoCompact = claudeJson.autoCompactEnabled === true;
+      } catch (e) {}
+      // Env var override trumps the config flag
+      try {
+        const settings = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude', 'settings.json'), 'utf8'));
+        const override = settings.env?.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+        if (override === '100') autoCompact = false;
+      } catch (e) {}
+
+      if (autoCompact && remaining != null) {
+        const BUFFER = 16.5;
+        const usableRemaining = Math.max(0, ((remaining - BUFFER) / (100 - BUFFER)) * 100);
+        usedPct = Math.max(0, Math.min(100, Math.round(100 - usableRemaining)));
+      }
     }
 
+    // Dedupe: if the bridge already holds identical values there is nothing new
+    // for the daemon to pick up — skip the write AND the poke (no wasteful fork
+    // on every idle status render). A new/`/clear`'d session has no prior file
+    // (or different values), so it always writes and pokes — guaranteeing the
+    // cold-start nudge that fills the Claude lines in without waiting for work.
+    if (prev && (prev.used_pct || 0) === usedPct && (prev.model || '') === model) return;
+
     try {
-      const bridgeDir = path.join(homeDir, '.cache', 'tmux-status');
       fs.mkdirSync(bridgeDir, { recursive: true });
-      const bridgePath = path.join(bridgeDir, `claude-ctx-${session}.json`);
       const tmpPath = bridgePath + '.tmp';
       fs.writeFileSync(tmpPath, JSON.stringify({
         used_pct: usedPct,
+        model: model,
         timestamp: Math.floor(Date.now() / 1000)
       }));
       fs.renameSync(tmpPath, bridgePath);

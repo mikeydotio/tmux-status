@@ -90,6 +90,20 @@ class TestLoadSessions(unittest.TestCase):
         pids = sorted(s["pid"] for s in sessions)
         self.assertEqual(pids, [111, 222])
 
+    def test_captures_session_id(self):
+        # The live conversation id (rewritten in place on /clear) is the
+        # authoritative identity the daemon keys the transcript+bridge on.
+        _write(os.path.join(self.claude, "sessions", "a.json"),
+               json.dumps({"pid": 111, "cwd": "/work/a", "sessionId": "sid-xyz"}))
+        s = render.load_sessions(self.claude)[0]
+        self.assertEqual(s["session_id"], "sid-xyz")
+
+    def test_session_id_defaults_empty_when_absent(self):
+        _write(os.path.join(self.claude, "sessions", "a.json"),
+               json.dumps({"pid": 111, "cwd": "/work/a"}))
+        s = render.load_sessions(self.claude)[0]
+        self.assertEqual(s["session_id"], "")
+
     def test_skips_missing_pid(self):
         _write(os.path.join(self.claude, "sessions", "a.json"),
                json.dumps({"cwd": "/work/a"}))
@@ -154,6 +168,26 @@ class TestFindTranscript(unittest.TestCase):
 
     def test_no_cwd(self):
         self.assertIsNone(render.find_transcript(None, self.claude))
+
+    def test_session_id_resolves_exact_file_not_newest(self):
+        # With a known sessionId, resolve {sessionId}.jsonl exactly — never the
+        # newest, which after /clear is a different (prior) session's transcript.
+        proj = os.path.join(self.claude, "projects", "-work-x")
+        _write(os.path.join(proj, "old.jsonl"), "{}\n")
+        _write(os.path.join(proj, "sid-1.jsonl"), "{}\n")
+        os.utime(os.path.join(proj, "old.jsonl"), (5000, 5000))   # newest by mtime
+        os.utime(os.path.join(proj, "sid-1.jsonl"), (1000, 1000))
+        self.assertEqual(
+            os.path.basename(render.find_transcript("/work/x", self.claude, "sid-1")),
+            "sid-1.jsonl",
+        )
+
+    def test_session_id_missing_file_returns_none(self):
+        # New/cleared session whose transcript does not exist yet must return
+        # None (so cost is $0), NOT fall back to a prior session's transcript.
+        proj = os.path.join(self.claude, "projects", "-work-x")
+        _write(os.path.join(proj, "old.jsonl"), "{}\n")
+        self.assertIsNone(render.find_transcript("/work/x", self.claude, "sid-new"))
 
 
 class TestParseTranscript(unittest.TestCase):
@@ -222,6 +256,34 @@ class TestReadContextPct(unittest.TestCase):
 
     def test_no_conversation_id(self):
         self.assertEqual(render.read_context_pct("", self.tmp, default=5), 5)
+
+
+class TestReadBridge(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_reads_used_pct_and_model(self):
+        _write(os.path.join(self.tmp, ".cache", "tmux-status", "claude-ctx-c1.json"),
+               json.dumps({"used_pct": 42, "model": "claude-opus-4-8"}))
+        b = render.read_bridge("c1", self.tmp)
+        self.assertEqual(b["used_pct"], 42)
+        self.assertEqual(b["model"], "claude-opus-4-8")
+
+    def test_legacy_dir_has_no_model(self):
+        # Legacy coderig bridges predate the model key -> model "" (transcript wins).
+        _write(os.path.join(self.tmp, ".cache", "coderig", "claude-ctx-c1.json"),
+               json.dumps({"used_pct": 7}))
+        b = render.read_bridge("c1", self.tmp)
+        self.assertEqual(b["used_pct"], 7)
+        self.assertEqual(b["model"], "")
+
+    def test_empty_sid_short_circuits_to_defaults(self):
+        b = render.read_bridge("", self.tmp, default=3)
+        self.assertEqual(b, {"used_pct": 3, "model": ""})
+
+    def test_missing_file_returns_defaults(self):
+        b = render.read_bridge("c1", self.tmp)
+        self.assertEqual(b, {"used_pct": 0, "model": ""})
 
 
 # ── Quota ──────────────────────────────────────────────────────────────────
@@ -392,6 +454,54 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         self.assertIn("RENDER_TS=", content)
         self.assertNotIn("MODEL=", content)
 
+    def _render_with(self, home, panes, sessions, ps_map):
+        # HOME pinned to the temp dir so parse_transcript's settings.json effort
+        # fallback can't read the real user's ~/.claude (keeps the test hermetic).
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+             mock.patch.object(render, "enumerate_panes", return_value=panes), \
+             mock.patch.object(render, "build_ps_map", return_value=ps_map), \
+             mock.patch.object(render, "load_sessions", return_value=sessions):
+            return render.render_once(home=home)
+
+    def test_render_once_model_from_bridge_when_transcript_has_no_assistant(self):
+        # The /clear bug: the new transcript exists but has no assistant message
+        # yet, so parse_transcript yields no model. The model must come from the
+        # statusLine bridge so BOTH Claude lines render instead of going blank.
+        home = self.tmp
+        _write(os.path.join(home, ".claude", "projects", "-work-x", "sid-1.jsonl"),
+               json.dumps({"type": "user", "sessionId": "sid-1",
+                           "message": {"content": "hi"}}) + "\n")
+        _write(os.path.join(home, ".cache", "tmux-status", "claude-ctx-sid-1.json"),
+               json.dumps({"used_pct": 3, "model": "claude-opus-4-8"}))
+        self._render_with(
+            home,
+            [{"pid": 4242, "path": "/var/empty"}],
+            [{"pid": 5000, "cwd": "/work/x", "session_id": "sid-1", "file": "f"}],
+            {5000: 4242},
+        )
+        with open(os.path.join(self.render_dir, "pane-4242.env")) as f:
+            content = f.read()
+        self.assertIn("MODEL=claude-opus-4-8", content)
+        self.assertIn("SHORT_MODEL='Opus 4.8'", content)
+        self.assertIn("USED_PCT=3", content)
+
+    def test_render_once_renders_from_bridge_when_transcript_absent(self):
+        # Brand-new session: no transcript file yet. Bridge supplies the model;
+        # session cost is $0.00 (no transcript to total).
+        home = self.tmp
+        _write(os.path.join(home, ".cache", "tmux-status", "claude-ctx-sid-2.json"),
+               json.dumps({"used_pct": 0, "model": "claude-sonnet-4-6"}))
+        self._render_with(
+            home,
+            [{"pid": 4243, "path": "/var/empty"}],
+            [{"pid": 5001, "cwd": "/work/y", "session_id": "sid-2", "file": "f"}],
+            {5001: 4243},
+        )
+        with open(os.path.join(self.render_dir, "pane-4243.env")) as f:
+            content = f.read()
+        self.assertIn("MODEL=claude-sonnet-4-6", content)
+        self.assertIn("SESSION_COST=0.00", content)
+
 
 # ── PATH hardening (launchd/systemd minimal PATH) ──────────────────────────
 class TestEnsurePath(unittest.TestCase):
@@ -460,6 +570,22 @@ class TestSignalWake(unittest.TestCase):
         os.kill(os.getpid(), signal.SIGTERM)
         self.assertTrue(_poll(shutdown.is_set), "SIGTERM did not set shutdown")
         self.assertTrue(wake.is_set(), "SIGTERM must also wake the loop to exit promptly")
+
+    def test_once_mode_ignores_sigusr1(self):
+        """A stray poke (SIGUSR1) must not kill the one-shot --once warm-up —
+        ``tmux-status-poke``'s pkill fallback and the tmux re-source hooks can
+        land one mid-pass, and the default disposition would terminate it."""
+        import argparse
+        args = argparse.Namespace(once=True, interval=5, log_level="INFO")
+        seen = {}
+
+        def grab(home=None, owner_pid=None):
+            seen["disp"] = signal.getsignal(signal.SIGUSR1)
+
+        with mock.patch.object(render, "_parse_args", return_value=args), \
+             mock.patch.object(render, "render_once", side_effect=grab):
+            render.main()
+        self.assertEqual(seen["disp"], signal.SIG_IGN)
 
     def test_loop_renders_immediately_on_wake(self):
         """A set ``wake`` forces an early tick instead of sleeping the interval."""
