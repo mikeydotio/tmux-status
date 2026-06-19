@@ -116,8 +116,12 @@ def walk_to_ancestor(pid, ancestor, ps_map, max_depth=64):
 def load_sessions(claude_dir):
     """Read every ``~/.claude/sessions/*.json`` once, in-process.
 
-    Returns a list of ``{pid, cwd, file}`` dicts (replaces the per-file
-    ``python3 -c`` cold starts). Unreadable/legacy files are skipped silently.
+    Returns a list of ``{pid, cwd, session_id, file}`` dicts (replaces the
+    per-file ``python3 -c`` cold starts). Unreadable/legacy files are skipped
+    silently. ``session_id`` is Claude's live conversation id — it is rewritten
+    in place on ``/clear`` (same pid, new id), so it is the authoritative,
+    lag-free identity the daemon keys the transcript and context bridge on
+    (the transcript's own ``sessionId`` only appears once a line is written).
     """
     sessions = []
     for pidfile in glob.glob(os.path.join(claude_dir, "sessions", "*.json")):
@@ -127,7 +131,12 @@ def load_sessions(claude_dir):
             pid = d.get("pid")
             if pid is None:
                 continue
-            sessions.append({"pid": int(pid), "cwd": d.get("cwd"), "file": pidfile})
+            sessions.append({
+                "pid": int(pid),
+                "cwd": d.get("cwd"),
+                "session_id": d.get("sessionId") or "",
+                "file": pidfile,
+            })
         except Exception:
             continue
     return sessions
@@ -145,13 +154,24 @@ def resolve_pane_session(pane_pid, sessions, ps_map):
     return None
 
 
-def find_transcript(cwd, claude_dir):
-    """Map a session cwd to its newest transcript ``.jsonl`` (``ls -t | head -1``)."""
+def find_transcript(cwd, claude_dir, session_id=None):
+    """Map a session to its transcript ``.jsonl``.
+
+    Transcript files are named ``{sessionId}.jsonl``, so when ``session_id`` is
+    known (from the live session file) we resolve the EXACT transcript for this
+    pane's session and return ``None`` if it does not exist yet — never falling
+    back to the newest file, which would belong to a different (prior) session
+    and mis-attribute its model/cost. With no ``session_id`` (legacy callers) we
+    keep the original newest-in-cwd behavior (``ls -t | head -1``).
+    """
     if not cwd:
         return None
     project_dir = os.path.join(claude_dir, "projects", cwd.replace("/", "-"))
     if not os.path.isdir(project_dir):
         return None
+    if session_id:
+        exact = os.path.join(project_dir, f"{session_id}.jsonl")
+        return exact if os.path.isfile(exact) else None
     candidates = glob.glob(os.path.join(project_dir, "*.jsonl"))
     if not candidates:
         return None
@@ -242,23 +262,39 @@ def parse_transcript(transcript):
     }
 
 
+def read_bridge(conversation_id, home, default=0):
+    """Read the statusline-hook bridge file (tmux-status dir, then legacy coderig).
+
+    Returns ``{"used_pct", "model"}``. The hook writes both keys in real time —
+    including on a fresh/``/clear``'d session BEFORE the transcript has any
+    assistant message — so the bridge is what lets the daemon render the Claude
+    lines without waiting for the first reply. Legacy coderig bridges predate the
+    ``model`` key, so ``model`` defaults to ``""`` there (forcing the transcript
+    fallback). An empty ``conversation_id`` short-circuits with the defaults and
+    touches no disk, preserving the non-Claude-pane contract.
+    """
+    result = {"used_pct": default, "model": ""}
+    if not conversation_id:
+        return result
+    for cache_dir in (
+        os.path.join(home, ".cache", "tmux-status"),
+        os.path.join(home, ".cache", "coderig"),
+    ):
+        bridge = os.path.join(cache_dir, f"claude-ctx-{conversation_id}.json")
+        try:
+            with open(bridge) as bf:
+                bd = json.load(bf)
+        except Exception:
+            continue
+        result["used_pct"] = bd.get("used_pct", default)
+        result["model"] = bd.get("model", "") or ""
+        return result
+    return result
+
+
 def read_context_pct(conversation_id, home, default=0):
-    """Read context % from the statusline-hook bridge file (tmux-status, then legacy)."""
-    used_pct = default
-    if conversation_id:
-        for cache_dir in [
-            os.path.join(home, ".cache", "tmux-status"),
-            os.path.join(home, ".cache", "coderig"),
-        ]:
-            bridge = os.path.join(cache_dir, f"claude-ctx-{conversation_id}.json")
-            try:
-                with open(bridge) as bf:
-                    bd = json.load(bf)
-                used_pct = bd.get("used_pct", used_pct)
-                break
-            except Exception:
-                continue
-    return used_pct
+    """Context % from the statusline-hook bridge file (thin wrapper on read_bridge)."""
+    return read_bridge(conversation_id, home, default)["used_pct"]
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
@@ -717,17 +753,27 @@ def render_once(home=None, owner_pid=None):
     ps_map = build_ps_map()
     sessions = load_sessions(claude_dir)
 
-    # Resolve each pane to a transcript first; only fetch global quota/daily-cost
-    # if at least one pane is actually running Claude (matches the old script,
-    # which never touched quota for non-Claude panes).
+    # Pass 1 — resolve each pane to its Claude session ONCE: the live session
+    # file keys the exact transcript (model/effort/cost) and the context bridge
+    # (used_pct + model). The model is the transcript's once an assistant reply
+    # exists, else the bridge's — so a fresh or /clear'd session (whose new
+    # transcript has no assistant message yet) still renders instead of going
+    # blank. Only fetch global quota/daily-cost if at least one pane resolves a
+    # model (matches the old script, which never touched quota for non-Claude
+    # panes). parse_transcript runs here and is reused in pass 2 — never twice.
+    _EMPTY_PARSED = {"model": "", "effort": "auto", "has_thinking": False, "conversation_id": ""}
     resolved = []
     any_claude = False
     for pane in panes:
         session = resolve_pane_session(pane["pid"], sessions, ps_map)
-        transcript = find_transcript(session["cwd"], claude_dir) if session else None
-        if transcript:
+        sid = session.get("session_id") or "" if session else ""
+        transcript = find_transcript(session["cwd"], claude_dir, sid) if session else None
+        bridge = read_bridge(sid, home)
+        parsed = parse_transcript(transcript) if transcript else _EMPTY_PARSED
+        model = parsed["model"] or bridge["model"]
+        if model:
             any_claude = True
-        resolved.append((pane, transcript))
+        resolved.append((pane, transcript, parsed, bridge, model))
 
     quota_vars = None
     daily_cost = 0.0
@@ -736,19 +782,17 @@ def render_once(home=None, owner_pid=None):
         quota_vars = compute_quota_vars(settings, home)
         daily_cost = compute_daily_cost(home)
 
+    # Pass 2 — pure assembly + write (no re-resolution, no second transcript parse).
     live_pids = set()
-    for pane, transcript in resolved:
+    for pane, transcript, parsed, bridge, model in resolved:
         live_pids.add(pane["pid"])
         lines = []
-        if transcript and quota_vars is not None:
-            parsed = parse_transcript(transcript)
-            if parsed["model"]:
-                used_pct = read_context_pct(parsed["conversation_id"], home)
-                session_cost = compute_session_cost(transcript)
-                lines.extend(claude_env_lines(
-                    parsed["model"], parsed["effort"], parsed["has_thinking"],
-                    used_pct, quota_vars, session_cost, daily_cost,
-                ))
+        if model and quota_vars is not None:
+            session_cost = compute_session_cost(transcript) if transcript else 0.0
+            lines.extend(claude_env_lines(
+                model, parsed["effort"], parsed["has_thinking"],
+                bridge["used_pct"], quota_vars, session_cost, daily_cost,
+            ))
         lines.append("GIT_LINE=" + shlex.quote(compute_git_line(pane["path"], home)))
         lines.append("RENDER_TS=" + str(render_ts))
         try:
@@ -854,6 +898,13 @@ def main():
     home = os.path.expanduser("~")
 
     if args.once:
+        # A one-shot warm-up must survive a stray SIGUSR1: tmux-status-poke's
+        # pkill fallback (``pkill -USR1 -f tmux-status-renderd``) and the tmux
+        # re-source hooks can land a poke on this process mid-pass, and the
+        # default SIGUSR1 disposition is to terminate — which would silently
+        # abort the install cache warm-up. Ignore it (the daemon path installs
+        # the real wake handler in run() instead).
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
         render_once(home=home)
         return
 

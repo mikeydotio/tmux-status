@@ -216,13 +216,13 @@ This overlay file sets only status-bar-related tmux options. Scripts are symlink
 Line 0 of the status bar shows Claude Code session metadata. There are three data sources, each independent:
 
 **Model + Effort** (always available):
-- The script walks the process tree from the tmux pane PID to find a running Claude process
-- Reads the session transcript (`.jsonl`) to extract the model name and effort level
+- The daemon walks the process tree from the tmux pane PID to the running Claude process and reads its live session file (`~/.claude/sessions/<pid>.json`) for the conversation id
+- The model comes from the session transcript (`.jsonl`) once it has an assistant reply, **or** from the statusLine hook's bridge file before then — so a freshly started or `/clear`'d session shows its model immediately instead of going blank until you start working
 
 **Context %** (requires statusLine hook):
 - The installer configures a Claude Code `statusLine` hook in `~/.claude/settings.json`
-- This hook (`tmux-status-context-hook.js`) writes real-time context window usage to `~/.cache/tmux-status/`
-- The status bar reads this bridge file every 5 seconds
+- This hook (`tmux-status-context-hook.js`) writes real-time context window usage **and the model id** to a per-session bridge file under `~/.cache/tmux-status/`, then nudges the daemon
+- The status bar reads this bridge file every 5 seconds (the hook only rewrites it and pokes the daemon when a value actually changes)
 - Without the hook, context % shows 0%
 
 **Quota bars** (optional, requires setup):
