@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.2] - 2026-06-18
+
+### Fixed
+- render Claude lines on fresh/cleared sessions without priming (281ca1a)
+- probe the tmux server without the info() name clash (8f10f7a)
+
+### Maintenance
+- remove the test-only GitHub Actions workflow (0523c30)
+
+_[manual]_
+
 ## [v2.3.1] - 2026-06-18
 
 ### Fixed
