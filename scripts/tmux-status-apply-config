@@ -31,11 +31,22 @@ fi
 # Uses pane-border-status to render a hostname banner at the top of
 # each pane, framed by double-line box-drawing characters (═══╣ ╠═══).
 if [ "$SHOW_TOP_BANNER" = "true" ]; then
+    # Precompute the hostname ONCE instead of forking `hostname` on every render.
+    # A `#(...)` in pane-border-format forks a shell each status-interval tick; under
+    # load that fork can fail and tmux then paints the literal
+    #   <'hostname -s | tr a-z A-Z' didn't start>
+    # across the banner. A static string keeps the banner fork-free (like lines 0-2)
+    # and removes that failure mode. The hostname is constant for the tmux server, so
+    # recomputing it on each config (re)load is sufficient.
+    HOST=$(hostname -s 2>/dev/null | tr 'a-z' 'A-Z')
+    HOST=${HOST//[^A-Z0-9._-]/}             # guard: keep only safe hostname chars
+    [ -n "$HOST" ] || HOST='#{host_short}'  # fork-free tmux fallback if hostname is empty
+
     tmux set -g pane-border-status top
     tmux set -g pane-border-lines double
     tmux set -g pane-active-border-style "fg=colour${TOP_BANNER_COLOR}"
     tmux set -g pane-border-style "fg=colour${TOP_BANNER_COLOR}"
-    tmux set -g pane-border-format '#[align=centre,bold]╣ #(hostname -s | tr a-z A-Z) ╠'
+    tmux set -g pane-border-format "#[align=centre,bold]╣ ${HOST} ╠"
 else
     tmux set -gu pane-border-status
     tmux set -gu pane-border-lines
