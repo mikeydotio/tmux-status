@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.5] - 2026-06-24
+
+### Added
+- fix "didn't start" status lines from tmux-server fd exhaustion (a4489c2)
+
+### Documentation
+- document fd-exhaustion root cause, troubleshooting, and invariant (248385d)
+
+_[manual]_
+
 ## [v2.3.4] - 2026-06-23
 
 ### Fixed
