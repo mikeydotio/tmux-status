@@ -49,7 +49,7 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 # Scripts to symlink into ~/.local/bin/
 # (tmux_claude_model.py is no longer symlinked: the thin readers don't import it
 #  and the render daemon uses its own vendored copy inside the server package.)
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-context-hook.js)
+SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-prune-clients tmux-status-context-hook.js)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 
@@ -287,6 +287,38 @@ if tmux list-sessions >/dev/null 2>&1; then
     fi
 else
     info "No running tmux server; config applies on next tmux start"
+fi
+
+# ── File-descriptor headroom advisory ─────────────────────────
+# tmux runs the status bar's #() jobs via fork()+socketpair() inside the tmux
+# SERVER; each in-flight job needs a server fd. macOS's launchd default soft
+# RLIMIT_NOFILE is only 256, which a modest number of long-lived clients (e.g.
+# abandoned mosh/SSH reconnects) plus status jobs can exhaust — after which tmux
+# prints "<'…' didn't start>" in place of status lines. Warn (never block) when
+# the running server is on a low limit. Read the SERVER's real limit via
+# `tmux run-shell` (a plain /bin/sh child of the server) so an interactive shell
+# whose .zshrc raised its own ulimit can't mask the server's actual value.
+if tmux list-sessions >/dev/null 2>&1; then
+    _fdcap="$(mktemp 2>/dev/null || echo "/tmp/tmux-status-fdcap.$$")"
+    _srv_nofile=""
+    if tmux run-shell "ulimit -Sn > '$_fdcap' 2>/dev/null" >/dev/null 2>&1; then
+        for _ in 1 2 3; do
+            _srv_nofile="$(tr -dc '0-9' < "$_fdcap" 2>/dev/null || true)"
+            [ -n "$_srv_nofile" ] && break
+            sleep 0.2
+        done
+    fi
+    rm -f "$_fdcap" 2>/dev/null || true
+    _clients="$(tmux list-clients 2>/dev/null | wc -l | tr -d ' ')"
+    if [ -n "$_srv_nofile" ] && [ "$_srv_nofile" -le 1024 ] 2>/dev/null; then
+        warn "tmux server open-file limit is low (ulimit -n = $_srv_nofile, ${_clients:-?} client(s) attached)."
+        echo "  The status bar's #() jobs consume tmux-server file descriptors; a low"
+        echo "  limit plus accumulated clients can make tmux show \"<'…' didn't start>\"."
+        echo "  Fix durably by raising the limit BEFORE starting tmux (e.g. in your shell rc):"
+        echo "      ulimit -n 8192"
+        echo "  then restart the tmux server. Reclaim fds from stale clients any time with:"
+        echo "      tmux-status-prune-clients"
+    fi
 fi
 
 # ── Configure Claude Code statusLine hook ─────────────────────

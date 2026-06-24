@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# tmux-status-prune-clients — detach idle tmux clients to reclaim server fds.
+#
+# Why this exists
+# ───────────────
+# tmux renders the status bar's `#()` jobs by fork()+socketpair() *inside the
+# tmux server process*. Each in-flight job needs a server-side file descriptor.
+# macOS's launchd default soft RLIMIT_NOFILE is only 256, and every attached
+# client (notably an abandoned mosh/SSH reconnect that never detached) pins one
+# server fd for as long as it lives. As stale clients accumulate, the fd budget
+# shrinks until a status redraw can't obtain a socketpair — tmux then prints
+#   <'~/.local/bin/tmux-claude-status "<pid>" model' didn't start>
+# in place of the status line. Detaching the dead clients frees those fds.
+#
+# This NEVER kills the session, its windows, or any running process — it only
+# disconnects a terminal's *view*. A detached client can re-attach at any time
+# with `tmux attach`.
+#
+# Usage:
+#   tmux-status-prune-clients [--dry-run] [IDLE_SECONDS]
+#     --dry-run      report what would be detached; change nothing.
+#     IDLE_SECONDS   detach clients idle longer than this many seconds.
+#                    Default 21600 (6h). Env TMUX_STATUS_PRUNE_IDLE sets the
+#                    default; a numeric argument overrides it.
+#
+# Exits 0 even when no tmux server is running (safe to call blindly / from cron).
+#
+# Test seams (used by tests/unit/test_prune_clients.sh; not for normal use):
+#   TMUX_STATUS_CLIENTS  newline-separated "<activity_epoch><TAB><client_name>"
+#                        lines used instead of `tmux list-clients`.
+#   TMUX_STATUS_PRUNE_NOW  fixed "now" epoch for deterministic idle math.
+
+set -euo pipefail
+
+IDLE_THRESHOLD="${TMUX_STATUS_PRUNE_IDLE:-21600}"
+DRY_RUN=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)    DRY_RUN=true ;;
+        ''|*[!0-9]*)  : ;;            # ignore flags / non-numeric tokens
+        *)            IDLE_THRESHOLD="$arg" ;;
+    esac
+done
+
+# "now" is overridable so tests are deterministic.
+NOW="${TMUX_STATUS_PRUNE_NOW:-$(date +%s)}"
+
+# Source of clients — overridable for tests. Each line: "<epoch><TAB><name>".
+# Use "is set" (not "is non-empty") so a test can express "zero clients" by
+# exporting TMUX_STATUS_CLIENTS="" without falling back to the live server.
+list_clients() {
+    if [ -n "${TMUX_STATUS_CLIENTS+set}" ]; then
+        printf '%s\n' "$TMUX_STATUS_CLIENTS"
+    else
+        tmux list-clients -F '#{client_activity}	#{client_name}' 2>/dev/null || true
+    fi
+}
+
+detached=0
+kept=0
+while IFS=$'\t' read -r activity name; do
+    [ -n "$activity" ] && [ -n "$name" ] || continue
+    case "$activity" in *[!0-9]*) continue ;; esac   # skip malformed rows
+
+    idle=$(( NOW - activity ))
+    if [ "$idle" -gt "$IDLE_THRESHOLD" ]; then
+        if $DRY_RUN; then
+            printf 'would detach %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
+        elif tmux detach-client -t "$name" 2>/dev/null; then
+            printf 'detached %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
+        fi
+        detached=$(( detached + 1 ))
+    else
+        kept=$(( kept + 1 ))
+    fi
+done <<EOF
+$(list_clients)
+EOF
+
+if $DRY_RUN; then
+    printf 'tmux-status-prune-clients: would detach %d idle client(s), keep %d.\n' "$detached" "$kept"
+else
+    printf 'tmux-status-prune-clients: detached %d idle client(s), kept %d.\n' "$detached" "$kept"
+fi
+exit 0

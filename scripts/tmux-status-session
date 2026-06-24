@@ -69,6 +69,24 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     exec tmux attach-session -t "$SESSION"
 fi
 
+# ── Raise the open-file limit for the server we're about to spawn ──
+# tmux runs the status bar's #() jobs via fork()+socketpair() inside the tmux
+# server; each needs a server fd. macOS's launchd default soft limit (256) is
+# exhausted by a modest number of long-lived clients + status jobs, after which
+# tmux prints "<'…' didn't start>" in place of status lines. The server we
+# create below inherits this shell's limit, so raise it now. Best-effort: a
+# ulimit failure must never abort the launcher (set -e is active).
+raise_nofile() {
+    local target=8192 hard
+    hard=$(ulimit -Hn 2>/dev/null || echo unlimited)
+    # Cap to the hard limit when it's a concrete number below the target.
+    if [ "$hard" != "unlimited" ] && [ "$hard" -lt "$target" ] 2>/dev/null; then
+        target=$hard
+    fi
+    ulimit -Sn "$target" 2>/dev/null || true
+}
+raise_nofile
+
 # ── Helper: pin a window name to prevent auto-rename ───────────
 pin_window_name() {
     tmux set-window-option -t "$1" automatic-rename off

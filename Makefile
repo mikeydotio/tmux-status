@@ -24,6 +24,8 @@ test:
 	@cd server/tests && python3 -m unittest test_render test_singleton test_render_deploy
 	@echo "── poke (daemon wake) unit test ──"
 	@bash tests/unit/test_poke.sh
+	@echo "── prune-clients (fd reclamation) unit test ──"
+	@bash tests/unit/test_prune_clients.sh
 	@echo "── context-hook bridge unit test ──"
 	@bash tests/unit/test_context_hook.sh
 	@echo "── render pipeline integration ──"
