@@ -323,6 +323,47 @@ cd ~/projects/tmux-status && git pull
 
 Scripts update automatically via symlinks. Reload tmux config to pick up any overlay changes.
 
+## Troubleshooting
+
+### Status lines show `<'…tmux-claude-status "…" model' didn't start>`
+
+That message is printed by **tmux itself**, not by tmux-status. tmux renders the
+status bar's `#()` segments by `fork()`-ing a child and creating a
+`socketpair()` **inside the tmux server process** — when it can't (it has run
+out of file descriptors), it substitutes `<'CMD' didn't start>` for that line.
+
+The usual cause on macOS is the file-descriptor budget. The launchd default soft
+limit is only **256 fds**, and *every attached client holds a server fd for as
+long as it lives* — including abandoned `mosh`/SSH reconnects that never
+detached. They accumulate over days until a status redraw can't get a
+socketpair, and the `#()` lines blank out (the bottom, non-`#()` line keeps
+rendering).
+
+**Reclaim fds now** — detach idle clients (this never kills your session,
+windows, or any process; a client can re-attach at any time):
+
+```bash
+tmux-status-prune-clients --dry-run   # preview which idle clients would detach
+tmux-status-prune-clients             # detach clients idle > 6h (default)
+tmux-status-prune-clients 3600        # or: detach clients idle > 1h
+```
+
+**Fix it durably** — give the tmux server a generous fd budget. Because a server
+inherits the limit of whatever shell started it, raise it in your shell rc
+*before* tmux starts, then restart the server:
+
+```bash
+ulimit -n 8192    # in ~/.zshrc / ~/.bashrc, before any `tmux` invocation
+```
+
+Sessions you create with `tmux-status-session` already raise this automatically.
+Check a running server's real limit (a pane shell's `ulimit -n` can be inflated
+by your rc, so ask the server directly):
+
+```bash
+tmux run-shell "ulimit -Sn > /tmp/n; :" ; cat /tmp/n
+```
+
 ## License
 
 MIT
