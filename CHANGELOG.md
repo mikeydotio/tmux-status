@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.4.1] - 2026-07-03
+
+### Fixed
+- silence background hooks so run-shell output can't blank panes (bcc168d)
+
+_[manual]_
+
 ## [v2.4.0] - 2026-07-03
 
 ### Added
