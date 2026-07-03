@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.4.0] - 2026-07-03
+
+### Added
+- auto-reap abandoned mosh/SSH clients to prevent fork storms (e7c5ee2)
+
+_[manual]_
+
 ## [v2.3.5] - 2026-06-24
 
 ### Added
