@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic tmux-status idle-client prune (fork-storm prevention)
+
+[Timer]
+# Backstop for the client-attached hook in overlay/status.conf: fire ~30m after
+# boot and every ~30m thereafter so idle clients can't accumulate even when no
+# new client ever attaches to trigger the hook.
+OnBootSec=30min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

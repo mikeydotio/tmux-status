@@ -84,10 +84,20 @@ if [ "$OS_TYPE" = "Linux" ]; then
             ok "Removed systemd unit: $_unit"
         fi
     done
+    # Prune scheduler is a timer + oneshot service (not a long-running unit).
+    systemctl --user stop tmux-status-prune.timer 2>/dev/null || true
+    systemctl --user disable tmux-status-prune.timer 2>/dev/null || true
+    for _f in tmux-status-prune.timer tmux-status-prune.service; do
+        _unit="$HOME/.config/systemd/user/$_f"
+        if [ -f "$_unit" ]; then
+            rm "$_unit"
+            ok "Removed systemd unit: $_unit"
+        fi
+    done
     systemctl --user daemon-reload 2>/dev/null || true
 elif [ "$OS_TYPE" = "Darwin" ]; then
     # launchd plists
-    for _plist in io.mikey.tmux-status-server io.mikey.tmux-status-renderd; do
+    for _plist in io.mikey.tmux-status-server io.mikey.tmux-status-renderd io.mikey.tmux-status-prune; do
         LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$_plist.plist"
         if [ -f "$LAUNCHD_PLIST" ]; then
             launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true

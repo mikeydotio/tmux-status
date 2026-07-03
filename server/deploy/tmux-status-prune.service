@@ -1,0 +1,10 @@
+[Unit]
+Description=tmux-status idle-client prune (fork-storm prevention)
+
+[Service]
+Type=oneshot
+# Detach tmux clients idle > 2h and reap their backing mosh-server/sshd-session
+# so abandoned mosh/SSH reconnects can't pile up into a status-bar fork storm.
+# Detach-only + allowlisted transport reap: never kills a session, its work, or
+# a local terminal. Triggered by tmux-status-prune.timer, not enabled directly.
+ExecStart=%h/.local/bin/tmux-status-prune-clients --reap-transport 7200

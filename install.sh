@@ -576,6 +576,46 @@ else
     echo "  You can run it manually: tmux-status-renderd"
 fi
 
+# ── Schedule the periodic idle-client prune (fork-storm backstop) ─────
+# overlay/status.conf prunes on every new client-attach; this timer/agent is the
+# backstop for when no new client attaches. It detaches tmux clients idle > 2h
+# and reaps their backing mosh-server/sshd-session so abandoned mosh/SSH
+# reconnects can't accumulate into a status-bar fork storm. Detach-only +
+# allowlisted transport reap — it never kills a session, its work, or a local
+# terminal.
+info "Scheduling periodic idle-client prune ($OS_TYPE)..."
+
+if [ "$OS_TYPE" = "Linux" ]; then
+    PRUNE_SYSTEMD_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$PRUNE_SYSTEMD_DIR"
+    cp "$INSTALL_DIR/server/deploy/tmux-status-prune.service" "$PRUNE_SYSTEMD_DIR/tmux-status-prune.service"
+    cp "$INSTALL_DIR/server/deploy/tmux-status-prune.timer"   "$PRUNE_SYSTEMD_DIR/tmux-status-prune.timer"
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now tmux-status-prune.timer 2>/dev/null || true
+    ok "prune timer installed and started (systemd)"
+elif [ "$OS_TYPE" = "Darwin" ]; then
+    PRUNE_PLIST="$HOME/Library/LaunchAgents/io.mikey.tmux-status-prune.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cp "$INSTALL_DIR/server/deploy/io.mikey.tmux-status-prune.plist" "$PRUNE_PLIST"
+    # launchd does not expand ~; rewrite the program path to absolute while
+    # preserving the --reap-transport / idle-seconds arguments after it.
+    python3 -c "
+import plistlib
+path = '$PRUNE_PLIST'
+with open(path, 'rb') as f:
+    pl = plistlib.load(f)
+pl['ProgramArguments'] = ['$HOME/.local/bin/tmux-status-prune-clients'] + pl['ProgramArguments'][1:]
+with open(path, 'wb') as f:
+    plistlib.dump(pl, f)
+"
+    launchctl unload "$PRUNE_PLIST" 2>/dev/null || true
+    launchctl load "$PRUNE_PLIST" 2>/dev/null || true
+    ok "prune agent installed and loaded (launchd, every 30m)"
+else
+    warn "Unknown OS ($OS_TYPE) — skipping prune scheduler"
+    echo "  You can prune manually any time: tmux-status-prune-clients --reap-transport"
+fi
+
 # Warm the per-pane cache so the status bar shows data immediately rather than
 # blanking until the daemon's first tick.
 if [ -x "$BIN_DIR/tmux-status-renderd" ]; then

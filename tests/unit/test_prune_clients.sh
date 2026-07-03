@@ -91,6 +91,82 @@ else
     fail=$((fail + 1))
 fi
 
+# ── --reap-transport: kill the mosh-server/sshd-session behind detached clients ──
+# Resolution is driven off an injected process snapshot (TMUX_STATUS_PS): rows are
+# "<pid> <ppid> <tty> <comm>". The transport is a tty session-leader's off-tty
+# parent, reaped only when it's a known network transport (mosh-server /
+# sshd-session / sshd) — a local terminal's emulator/`login` is spared.
+check_contains() {   # <desc> <needle> <haystack>
+    if printf '%s\n' "$3" | grep -qF -- "$2"; then
+        echo "  PASS  $1"; pass=$((pass + 1))
+    else
+        echo "  FAIL  $1 — missing: $2" >&2
+        echo "        output: $3" >&2
+        fail=$((fail + 1))
+    fi
+}
+check_absent() {     # <desc> <needle> <haystack>
+    if printf '%s\n' "$3" | grep -qF -- "$2"; then
+        echo "  FAIL  $1 — unexpected: $2" >&2
+        echo "        output: $3" >&2
+        fail=$((fail + 1))
+    else
+        echo "  PASS  $1"; pass=$((pass + 1))
+    fi
+}
+
+# Three stale clients (mosh-backed, LOCAL ghostty-via-login, sshd-backed) + one
+# fresh mosh-backed client. NOW=1000000, threshold 3600.
+REAP_CLIENTS="900000${TAB}/dev/ttys38
+900000${TAB}/dev/ttys5
+900000${TAB}/dev/ttys7
+1000000${TAB}/dev/ttys1"
+REAP_PS="30163 30162 ttys38 /opt/homebrew/bin/zsh
+30162 1 ?? /opt/homebrew/bin/mosh-server
+30515 30163 ttys38 /opt/homebrew/bin/tmux
+80395 80394 ttys5 /bin/zsh
+80394 1439 ttys5 /usr/bin/login
+1439 1 ?? /Applications/Ghostty.app/Contents/MacOS/ghostty
+50001 50000 ttys7 /bin/zsh
+50000 1 ?? /usr/sbin/sshd-session
+40000 39999 ttys1 /bin/zsh
+39999 1 ?? /opt/homebrew/bin/mosh-server"
+
+out=$(TMUX_STATUS_PRUNE_NOW="$NOW" TMUX_STATUS_CLIENTS="$REAP_CLIENTS" \
+      TMUX_STATUS_PS="$REAP_PS" bash "$SCRIPT" --dry-run --reap-transport 3600)
+check_contains "reap: mosh-server 30162 flagged"        "would reap transport 30162" "$out"
+check_contains "reap: sshd-session 50000 flagged"       "would reap transport 50000" "$out"
+check_absent   "reap: local ghostty (1439) spared"      "1439" "$out"
+check_absent   "reap: local login (80394) spared"       "80394" "$out"
+check_absent   "reap: fresh client transport (39999) spared" "39999" "$out"
+check_contains "reap: summary counts 2 transports"      "would reap 2 transport(s)" "$out"
+check_contains "reap: 3 detached / 1 kept"              "would detach 3 idle client(s), keep 1" "$out"
+
+# Without --reap-transport, no transport is touched and the summary omits reaping.
+out=$(TMUX_STATUS_PRUNE_NOW="$NOW" TMUX_STATUS_CLIENTS="$REAP_CLIENTS" \
+      TMUX_STATUS_PS="$REAP_PS" bash "$SCRIPT" --dry-run 3600)
+check_absent   "no-reap flag: no transport reaped"      "reap transport" "$out"
+check_absent   "no-reap flag: summary has no reap count" "transport(s)" "$out"
+
+# Real path (no --dry-run): the reaped pid is sent to the kill-log seam instead of
+# an actual SIGTERM. A synthetic tty name that tmux would never assign keeps the
+# unguarded `tmux detach-client` from matching a real client on the test machine.
+KILL_LOG=$(mktemp 2>/dev/null || echo "/tmp/tmux-status-prune-kill.$$")
+: > "$KILL_LOG"
+REAP_PS_REAL="70001 70000 ttyFAKE /opt/homebrew/bin/zsh
+70000 1 ?? /opt/homebrew/bin/mosh-server"
+out=$(TMUX_STATUS_PRUNE_NOW="$NOW" TMUX_STATUS_CLIENTS="900000${TAB}/dev/ttyFAKE" \
+      TMUX_STATUS_PS="$REAP_PS_REAL" TMUX_STATUS_KILL_LOG="$KILL_LOG" \
+      bash "$SCRIPT" --reap-transport 3600)
+if grep -qx "70000" "$KILL_LOG"; then
+    echo "  PASS  reap real: mosh-server 70000 sent to kill-log"; pass=$((pass + 1))
+else
+    echo "  FAIL  reap real: expected 70000 in kill-log, got: $(cat "$KILL_LOG")" >&2
+    fail=$((fail + 1))
+fi
+check_contains "reap real: summary says reaped 1"       "reaped 1 transport(s)" "$out"
+rm -f "$KILL_LOG"
+
 echo
 echo "prune-clients tests: $pass passed, $fail failed."
 [ "$fail" -eq 0 ]

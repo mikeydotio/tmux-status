@@ -1,45 +1,82 @@
 #!/usr/bin/env bash
-# tmux-status-prune-clients — detach idle tmux clients to reclaim server fds.
+# tmux-status-prune-clients — detach idle tmux clients (and optionally reap the
+# mosh-server/SSH transport behind them) to reclaim server fds and stop fork storms.
 #
 # Why this exists
 # ───────────────
 # tmux renders the status bar's `#()` jobs by fork()+socketpair() *inside the
-# tmux server process*. Each in-flight job needs a server-side file descriptor.
-# macOS's launchd default soft RLIMIT_NOFILE is only 256, and every attached
-# client (notably an abandoned mosh/SSH reconnect that never detached) pins one
-# server fd for as long as it lives. As stale clients accumulate, the fd budget
-# shrinks until a status redraw can't obtain a socketpair — tmux then prints
-#   <'~/.local/bin/tmux-claude-status "<pid>" model' didn't start>
-# in place of the status line. Detaching the dead clients frees those fds.
+# tmux server process*. Each attached client makes the server re-fork those
+# readers every `status-interval`, and each in-flight job needs a server-side
+# file descriptor. macOS's launchd default soft RLIMIT_NOFILE is only 256, and
+# every attached client (notably an abandoned mosh/SSH reconnect that never
+# detached) pins one server fd for as long as it lives. Two failure modes follow
+# as stale clients accumulate:
+#   • fd exhaustion — a redraw can't get a socketpair, so tmux prints
+#       <'~/.local/bin/tmux-claude-status "<pid>" model' didn't start>
+#     in place of the status line; and
+#   • a fork storm — N stale clients = N× the reader fork rate, which has driven
+#     system load average to ~100 on a 10-core Mac.
+# Detaching the dead clients frees the fds and stops the forking.
 #
-# This NEVER kills the session, its windows, or any running process — it only
-# disconnects a terminal's *view*. A detached client can re-attach at any time
-# with `tmux attach`.
+# --reap-transport additionally kills the transport process (mosh-server /
+# sshd-session) that backs each *detached* client. A detached tmux client whose
+# mosh-server is still alive can silently re-attach and defeat the prune; reaping
+# the transport removes the thing that would reattach — and, for mosh, reclaims a
+# server that mosh 1.4 will otherwise keep alive forever (no idle timeout). The
+# upstream cause of the orphans is the iOS mosh client (Moshtail) spawning a new
+# `mosh-server` per cold relaunch without reaping the old one.
+#
+# This NEVER kills the session, its windows, or any running work process — it
+# only disconnects a terminal's *view* and, with --reap-transport, the network
+# transport (mosh-server/sshd-session) feeding that view. The tmux server, its
+# panes, and everything running in them are children of the tmux daemon, not of
+# any mosh-server, so they survive. A detached client can re-attach any time with
+# `tmux attach`. Reaping is confined to clients already past the idle threshold,
+# so the active session's transport is never touched; and only known network
+# transports are killed (an allowlist), so a LOCAL terminal's `login`/emulator is
+# never reaped.
 #
 # Usage:
-#   tmux-status-prune-clients [--dry-run] [IDLE_SECONDS]
-#     --dry-run      report what would be detached; change nothing.
-#     IDLE_SECONDS   detach clients idle longer than this many seconds.
-#                    Default 21600 (6h). Env TMUX_STATUS_PRUNE_IDLE sets the
-#                    default; a numeric argument overrides it.
+#   tmux-status-prune-clients [--dry-run] [--reap-transport] [IDLE_SECONDS]
+#     --dry-run          report what would be detached/reaped; change nothing.
+#     --reap-transport   also kill each detached client's backing mosh-server or
+#                        sshd-session (idle clients only; local terminals spared).
+#     IDLE_SECONDS       detach clients idle longer than this many seconds.
+#                        Default 21600 (6h). Env TMUX_STATUS_PRUNE_IDLE sets the
+#                        default; a numeric argument overrides it.
 #
-# Exits 0 even when no tmux server is running (safe to call blindly / from cron).
+# Exits 0 even when no tmux server is running (safe to call blindly / from a
+# launchd StartInterval agent, a systemd timer, or cron).
 #
 # Test seams (used by tests/unit/test_prune_clients.sh; not for normal use):
-#   TMUX_STATUS_CLIENTS  newline-separated "<activity_epoch><TAB><client_name>"
-#                        lines used instead of `tmux list-clients`.
-#   TMUX_STATUS_PRUNE_NOW  fixed "now" epoch for deterministic idle math.
+#   TMUX_STATUS_CLIENTS   newline-separated "<activity_epoch><TAB><client_name>"
+#                         lines used instead of `tmux list-clients`.
+#   TMUX_STATUS_PRUNE_NOW fixed "now" epoch for deterministic idle math.
+#   TMUX_STATUS_PS        process snapshot ("<pid> <ppid> <tty> <comm>" rows) used
+#                         instead of `ps` for --reap-transport resolution.
+#   TMUX_STATUS_KILL_LOG  file to append reaped pids to instead of sending SIGTERM.
 
 set -euo pipefail
 
+# Prepend common bin dirs (if absent) so `tmux` resolves when we're started by
+# launchd/systemd/cron, whose minimal PATH omits Homebrew/local dirs. Mirrors
+# render.py's _EXTRA_PATH — the render daemon hit the same PATH gap.
+case ":${PATH:-}:" in
+    *:/opt/homebrew/bin:*) ;;
+    *) PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}" ;;
+esac
+export PATH
+
 IDLE_THRESHOLD="${TMUX_STATUS_PRUNE_IDLE:-21600}"
 DRY_RUN=false
+REAP_TRANSPORT=false
 
 for arg in "$@"; do
     case "$arg" in
-        --dry-run)    DRY_RUN=true ;;
-        ''|*[!0-9]*)  : ;;            # ignore flags / non-numeric tokens
-        *)            IDLE_THRESHOLD="$arg" ;;
+        --dry-run)         DRY_RUN=true ;;
+        --reap-transport)  REAP_TRANSPORT=true ;;
+        ''|*[!0-9]*)       : ;;            # ignore flags / non-numeric tokens
+        *)                 IDLE_THRESHOLD="$arg" ;;
     esac
 done
 
@@ -57,30 +94,100 @@ list_clients() {
     fi
 }
 
+# Process snapshot for transport resolution — overridable for tests.
+# Rows: "<pid> <ppid> <tty> <comm>" (comm is the executable path, no args).
+ps_snapshot() {
+    if [ -n "${TMUX_STATUS_PS+set}" ]; then
+        printf '%s\n' "$TMUX_STATUS_PS"
+    else
+        ps -axo pid=,ppid=,tty=,comm= 2>/dev/null || true
+    fi
+}
+
+# Resolve the network transport backing a client's tty and print its pid(s), or
+# nothing. The transport is the off-tty parent of the tty's session leader — the
+# login shell's parent. We print it ONLY when it is a known network transport
+# (mosh-server / sshd-session / sshd), so a local terminal's emulator or `login`
+# is never a reap target.
+transport_pid_for_tty() {
+    local tty="$1"          # short name, e.g. "ttys038"
+    [ -n "$tty" ] || return 0
+    ps_snapshot | awk -v tty="$tty" '
+        { ppidof[$1] = $2; comm[$1] = $4; if ($3 == tty) ontty[$1] = 1 }
+        END {
+            for (pid in ontty) {
+                par = ppidof[pid]
+                if (par == "" || (par in ontty)) continue   # not a tty root
+                c = comm[par]
+                n = split(c, parts, "/"); base = parts[n]
+                if (base == "mosh-server" || base == "sshd-session" || base == "sshd") {
+                    if (!seen[par]++) print par
+                }
+            }
+        }'
+}
+
+# Kill (or, under a test kill-log, record) a reaped transport pid.
+reap_kill() {
+    local pid="$1"
+    if [ -n "${TMUX_STATUS_KILL_LOG:-}" ]; then
+        printf '%s\n' "$pid" >> "$TMUX_STATUS_KILL_LOG"
+    else
+        kill "$pid" 2>/dev/null || true
+    fi
+}
+
 detached=0
 kept=0
+reaped=0
 while IFS=$'\t' read -r activity name; do
     [ -n "$activity" ] && [ -n "$name" ] || continue
     case "$activity" in *[!0-9]*) continue ;; esac   # skip malformed rows
 
     idle=$(( NOW - activity ))
-    if [ "$idle" -gt "$IDLE_THRESHOLD" ]; then
-        if $DRY_RUN; then
-            printf 'would detach %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
-        elif tmux detach-client -t "$name" 2>/dev/null; then
-            printf 'detached %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
-        fi
-        detached=$(( detached + 1 ))
-    else
+    if [ "$idle" -le "$IDLE_THRESHOLD" ]; then
         kept=$(( kept + 1 ))
+        continue
+    fi
+
+    if $DRY_RUN; then
+        printf 'would detach %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
+    elif tmux detach-client -t "$name" 2>/dev/null; then
+        printf 'detached %s (idle %dh)\n' "$name" "$(( idle / 3600 ))"
+    fi
+    detached=$(( detached + 1 ))
+
+    # Reap the mosh-server/sshd-session behind this now-detached client so it
+    # can't linger (mosh: forever) or silently re-attach. Only idle clients reach
+    # here, so the active session's transport is never a candidate.
+    if $REAP_TRANSPORT; then
+        while IFS= read -r tpid; do
+            [ -n "$tpid" ] || continue
+            if $DRY_RUN; then
+                printf 'would reap transport %s (backs %s)\n' "$tpid" "$name"
+            else
+                reap_kill "$tpid"
+                printf 'reaped transport %s (backed %s)\n' "$tpid" "$name"
+            fi
+            reaped=$(( reaped + 1 ))
+        done <<REAP
+$(transport_pid_for_tty "${name#/dev/}")
+REAP
     fi
 done <<EOF
 $(list_clients)
 EOF
 
 if $DRY_RUN; then
-    printf 'tmux-status-prune-clients: would detach %d idle client(s), keep %d.\n' "$detached" "$kept"
+    printf 'tmux-status-prune-clients: would detach %d idle client(s), keep %d' "$detached" "$kept"
 else
-    printf 'tmux-status-prune-clients: detached %d idle client(s), kept %d.\n' "$detached" "$kept"
+    printf 'tmux-status-prune-clients: detached %d idle client(s), kept %d' "$detached" "$kept"
+fi
+if ! $REAP_TRANSPORT; then
+    printf '.\n'
+elif $DRY_RUN; then
+    printf ', would reap %d transport(s).\n' "$reaped"
+else
+    printf ', reaped %d transport(s).\n' "$reaped"
 fi
 exit 0

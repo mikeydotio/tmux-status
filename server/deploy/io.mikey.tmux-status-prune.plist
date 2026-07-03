@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.mikey.tmux-status-prune</string>
+    <!-- Periodic backstop for the client-attached hook in overlay/status.conf:
+         detach tmux clients idle > 2h and reap their backing mosh-server/
+         sshd-session, so abandoned mosh/SSH reconnects can't pile up into a
+         status-bar fork storm even when no new client ever attaches to trigger
+         the hook. install.sh rewrites ProgramArguments[0] to an absolute path
+         (launchd does not expand ~). Detach-only + allowlisted transport reap:
+         it never kills a session, its work, or a local terminal. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>~/.local/bin/tmux-status-prune-clients</string>
+        <string>--reap-transport</string>
+        <string>7200</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

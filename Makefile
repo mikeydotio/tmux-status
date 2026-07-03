@@ -21,7 +21,7 @@ test:
 	@echo "── model unit tests ──"
 	@python3 -m unittest discover -s tests/unit -p 'test_*.py'
 	@echo "── render daemon unit tests ──"
-	@cd server/tests && python3 -m unittest test_render test_singleton test_render_deploy
+	@cd server/tests && python3 -m unittest test_render test_singleton test_render_deploy test_prune_deploy
 	@echo "── poke (daemon wake) unit test ──"
 	@bash tests/unit/test_poke.sh
 	@echo "── prune-clients (fd reclamation) unit test ──"
