@@ -51,6 +51,37 @@ if [ "$readers" -lt 3 ]; then
     die "expected >=3 reader invocations in overlay, found $readers — gate may be matching nothing"
 fi
 
+# ── Pane-safety gate (view-mode hijack regression) ─────────────
+# tmux renders ANY run-shell stdout — even backgrounded with -b — into the
+# ACTIVE pane's view-mode, blanking its visible contents until dismissed. A
+# background hook that prints even one line therefore hijacks the focused pane
+# on every fire. This bit the client-attached prune hook: it emitted a one-line
+# summary ("detached N idle client(s)..."), so every mosh/Moshtail reconnect
+# cleared the user's pane. Every `run-shell -b` hook MUST redirect stdout+stderr
+# so it stays silent to tmux. Portable to bash 3.2.
+bghooks=0
+while IFS= read -r line; do
+    case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in
+        '#'*) continue ;;
+    esac
+    case "$line" in
+        *'run-shell -b'*) ;;
+        *) continue ;;
+    esac
+    bghooks=$((bghooks + 1))
+    case "$line" in
+        *'>/dev/null'*|*'> /dev/null'*)
+            pass "background -b hook redirects output: $(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-52)" ;;
+        *)
+            die "background 'run-shell -b' hook does NOT redirect stdout (tmux renders it into the active pane's view-mode, blanking the pane): $line" ;;
+    esac
+done < "$CONF"
+
+# Guard against a vacuous gate: at least the prune + poke hooks are -b hooks.
+if [ "$bghooks" -lt 1 ]; then
+    die "expected >=1 'run-shell -b' hook in overlay, found $bghooks — pane-safety gate may be matching nothing"
+fi
+
 echo ""
 if [ "$fail" -eq 0 ]; then
     echo "status.conf reader contract OK ($readers reader invocations checked)."
