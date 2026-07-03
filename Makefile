@@ -3,7 +3,7 @@
 # Per the project's testing policy, the full suite runs LOCALLY (not in GitHub
 # Actions). `make test` is the canonical green gate used by the pre-push hook:
 # bash syntax + the model unit tests + the render-daemon unit tests + the
-# render pipeline integration test.
+# render pipeline integration test + the hook pane-safety integration test.
 #
 #   make test         # the green gate (run before pushing)
 #   make test-server  # full server/tests suite (may need extra deps: webtest, curl_cffi)
@@ -30,6 +30,8 @@ test:
 	@bash tests/unit/test_context_hook.sh
 	@echo "── render pipeline integration ──"
 	@bash tests/integration/test_render_pipeline.sh
+	@echo "── hook pane-safety integration (view-mode hijack) ──"
+	@bash tests/integration/test_hook_pane_safety.sh
 	@echo "✓ make test passed"
 
 test-server:
