@@ -10,7 +10,7 @@ A 3-line tmux status bar for Claude Code developers. Displays Claude session met
 
 The project is a collection of shell (bash), Python 3, and Node.js scripts installed via symlinks, plus a Python `server/` package (quota server + render daemon).
 
-**Tests:** `make test` is the green gate (bash syntax + model unit tests + render-daemon unit tests + render pipeline integration). Per project policy the suite runs locally, not in GitHub Actions. `make test-server` runs the full `server/tests` suite (needs extra deps: `webtest`, `curl_cffi`).
+**Tests:** `make test` is the green gate (bash syntax + model unit tests + render-daemon unit tests + render pipeline integration). Per project policy the suite runs locally, not in GitHub Actions. `make test-server` runs the full `server/tests` suite (needs extra deps: `webtest`, `bottle`, `curl_cffi`).
 
 **Install locally:** `./install.sh` — symlinks scripts to `~/.local/bin/`, creates config at `~/.config/tmux-status/`, adds one `source-file` line to tmux.conf, configures the Claude Code statusLine hook.
 
