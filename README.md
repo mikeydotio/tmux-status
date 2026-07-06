@@ -1,6 +1,6 @@
 # tmux-status
 
-A 4-line tmux status bar for Claude Code developers. Shows Claude session info (model/effort/context, quota/cost), git status, and a clean window bar — without touching your keybindings or preferences.
+A 3-line tmux status bar for Claude Code developers. Shows Claude session info (model/effort/context, quota), git status, and a clean window bar — without touching your keybindings or preferences.
 
 ## Preview
 
@@ -29,10 +29,10 @@ The status bar has three lines, rendered at the bottom of the terminal:
 
 ### Top Banner (optional)
 
-A bold, centered hostname banner at the top of each pane using double-line box-drawing:
+A bold, centered banner at the top of each pane — the hostname and the current window name — using double-line box-drawing:
 
 ```
-═══════════════════════╣ MYHOST ╠═══════════════════════
+═════════════════╣ MYHOST · ✧ myapp ╠═════════════════
 ```
 
 Enabled by default. Disable in `settings.conf`:
@@ -131,7 +131,7 @@ Edit `~/.config/tmux-status/settings.conf`:
 # Use 24-hour clock format (default: false)
 CLOCK_24H=true
 
-# Show hostname banner at the top of each pane (default: true)
+# Show the "hostname · window-name" banner at the top of each pane (default: true)
 SHOW_TOP_BANNER=true
 
 # Banner color — 256-color code (default: 208 = orange)
@@ -174,7 +174,7 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 ## What It Sets (and What It Doesn't)
 
 **Sets** (status bar and optional banner):
-- 4-line status bar layout and formatting
+- 3-line status bar layout and formatting
 - Window tab styling (blue borders, yellow activity, bold active)
 - Status-left (hostname) and status-right (clock)
 - Activity monitoring
@@ -222,6 +222,7 @@ Line 0 of the status bar shows Claude Code session metadata. There are three dat
 **Model + Effort** (always available):
 - The daemon walks the process tree from the tmux pane PID to the running Claude process and reads its live session file (`~/.claude/sessions/<pid>.json`) for the conversation id
 - The model comes from the session transcript (`.jsonl`) once it has an assistant reply, **or** from the statusLine hook's bridge file before then — so a freshly started or `/clear`'d session shows its model immediately instead of going blank until you start working
+- The **effort** label (`auto`/`high`/`xhigh`/`max`) comes from the statusLine hook's live session value, so it tracks the header — including mid-session Shift+Tab changes — falling back to the last `/effort` command or your `settings.json` default
 
 **Context %** (requires statusLine hook):
 - The installer configures a Claude Code `statusLine` hook in `~/.claude/settings.json`

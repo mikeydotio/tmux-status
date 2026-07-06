@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A 4-line tmux status bar for Claude Code developers. Displays Claude session metadata (model, effort, context %, quota, token cost), filesystem path with git status, and a window tab bar — without touching keybindings or preferences.
+A 3-line tmux status bar for Claude Code developers. Displays Claude session metadata (model, effort, context %, quota) on one combined line, filesystem path with git status, and a window tab bar — without touching keybindings or preferences.
 
 ## Development
 
@@ -26,10 +26,10 @@ The system has independent data pipelines that feed into tmux's status bar rende
 
 The status scripts are **thin readers**: all heavy work was moved into a background daemon (see below) so the tmux `#()` render path never forks (the historical cause of a status-bar fork-storm that pinned every core under load).
 
-- **`overlay/status.conf`** — The only file sourced by the user's tmux.conf. Defines a 4-line status bar where lines 0–2 call shell scripts via `#(...)`, and line 3 is the relocated default tmux status format. Lines 0–2 all pass `#{pane_pid}`.
-- **`scripts/tmux-claude-status`** (Bash) — Renders lines 0 and 1 (`model` / `quota` mode). Sources the per-pane cache `~/.cache/tmux-status/render/pane-<pane_pid>.env` and `printf`s the line (same `bar_char`/colors as before). Outputs nothing when the pane isn't running Claude or the cache is missing. Shows a dim `⋯` marker if the cache is older than `RENDER_MAX_STALE` (default 30s) — i.e. the daemon may be down. Does no process walking, transcript parsing, quota HTTP, or git.
-- **`scripts/tmux-git-status`** (Bash) — Renders line 2 from the same per-pane cache's `GIT_LINE` (now keyed by `#{pane_pid}`, formerly `#{pane_current_path}`).
-- **`scripts/tmux-status-apply-config`** (Bash) — Runs once on overlay source. Reads `settings.conf` to apply clock format and optional top hostname banner.
+- **`overlay/status.conf`** — The only file sourced by the user's tmux.conf. Defines a 3-line status bar where lines 0–1 call shell scripts via `#(...)`, and line 2 is the relocated default tmux status format. Lines 0–1 all pass `#{pane_pid}`.
+- **`scripts/tmux-claude-status`** (Bash) — Renders line 0 as ONE combined Claude line: model (effort) │ Ctx: bar pct% │ 5h │ 7d quota (the quota half is omitted when no key is configured). Takes only `<pane_pid>` (no mode arg). Sources the per-pane cache `~/.cache/tmux-status/render/pane-<pane_pid>.env` and `printf`s the line. Outputs nothing when the pane isn't running Claude or the cache is missing. Shows a dim `⋯` marker if the cache is older than `RENDER_MAX_STALE` (default 30s) — i.e. the daemon may be down. Does no process walking, transcript parsing, quota HTTP, or git.
+- **`scripts/tmux-git-status`** (Bash) — Renders line 1 from the same per-pane cache's `GIT_LINE` (now keyed by `#{pane_pid}`, formerly `#{pane_current_path}`).
+- **`scripts/tmux-status-apply-config`** (Bash) — Runs once on overlay source. Reads `settings.conf` to apply clock format and the optional top banner (`═╣ HOSTNAME · window-name ╠═` via `pane-border-format`; hostname is a precomputed static string, `#{window_name}` is a native tmux format).
 - **`scripts/tmux-status-poke`** (Bash) — Wakes the daemon for one immediate tick by sending `SIGUSR1` to the pid in `renderd.lock` (falls back to `pkill -f tmux-status-renderd`). Invoked ONLY on infrequent events — tmux `set-hook` for `after-new-window`/`after-split-window`/`session-created`/`client-session-changed` (in `status.conf`, run with `run-shell -b`), and the context hook after it writes the bridge file. This closes the cold-start gap (blank Claude lines on a fresh or `/clear`'d session) without adding any fork to the per-render path. Always exits 0.
 
 ### Contract invariant (do not break)
@@ -44,11 +44,11 @@ The fork-free refactor moved heavy work off the render path, but tmux still spaw
 
 ### Status pre-computation (`tmux-status-renderd` daemon)
 
-- **`server/tmux_status_server/render.py`** (Python) — The render daemon. On its own cadence (`--interval`, default 5s) it takes ONE `ps -axo pid=,ppid=` snapshot, enumerates panes via `tmux list-panes -a`, resolves each pane→Claude-session in-memory, parses transcripts, fetches/reads quota, computes session+daily cost, computes git status, and writes one shell-sourceable cache file per pane (`pane-<pid>.env`) plus pruning panes that closed. Identity is keyed on the **live session file** (`~/.claude/sessions/<pid>.json`), whose `sessionId` is rewritten in place on `/clear`: that id locates the exact transcript (`<sessionId>.jsonl`) and the exact context bridge. The model is the transcript's once it has an assistant reply, otherwise the bridge's `model` — so a fresh/`/clear`'d session (whose new transcript has no assistant message yet) renders immediately instead of blanking both Claude lines until work starts; the transcript is used only for cost/effort/thinking and its absence is tolerated (cost `$0.00`). The `.env` contract is the exact `KEY=value` set the old `tmux-claude-status` heredoc emitted, so reader output is byte-for-byte unchanged. Installed as the `tmux-status-renderd` entry point; runs as a launchd agent / systemd user unit with auto-restart. A `flock` singleton (`singleton.py`) guarantees one instance. `--once` renders a single pass (used for tests and install cache warm-up). `model.py` is a vendored byte-identical copy of `scripts/tmux_claude_model.py` (a drift test enforces this).
+- **`server/tmux_status_server/render.py`** (Python) — The render daemon. On its own cadence (`--interval`, default 5s) it takes ONE `ps -axo pid=,ppid=` snapshot, enumerates panes via `tmux list-panes -a`, resolves each pane→Claude-session in-memory, parses transcripts, fetches/reads quota, computes git status, and writes one shell-sourceable cache file per pane (`pane-<pid>.env`) plus pruning panes that closed. Identity is keyed on the **live session file** (`~/.claude/sessions/<pid>.json`), whose `sessionId` is rewritten in place on `/clear`: that id locates the exact transcript (`<sessionId>.jsonl`) and the exact context bridge. The model is the transcript's once it has an assistant reply, otherwise the bridge's `model` — so a fresh/`/clear`'d session (whose new transcript has no assistant message yet) renders immediately instead of blanking the Claude line until work starts. **Effort precedence: the bridge's live `effort` (written by the statusLine hook from `effort.level`, reflecting mid-session Shift+Tab changes) → the transcript's last `/effort` echo → `~/.claude/settings.json` `effortLevel` → `auto`.** The transcript's absence is tolerated. Installed as the `tmux-status-renderd` entry point; runs as a launchd agent / systemd user unit with auto-restart. A `flock` singleton (`singleton.py`) guarantees one instance. `--once` renders a single pass (used for tests and install cache warm-up). `model.py` is a vendored byte-identical copy of `scripts/tmux_claude_model.py` (a drift test enforces this).
 
 ### Context Window Tracking (real-time, via Claude Code hook)
 
-- **`scripts/tmux-status-context-hook.js`** (Node.js) — A Claude Code `statusLine` hook. Receives JSON on stdin with `session_id`, `model.id`, and `context_window` data, normalizes autocompact (16.5% reserved buffer), and writes atomic JSON `{used_pct, model, timestamp}` to `~/.cache/tmux-status/claude-ctx-{sessionId}.json`, then pokes the daemon. Carrying `model` lets the daemon render a fresh/`/clear`'d session before any assistant reply. To avoid waste it reads the prior bridge and skips the write+poke when neither `used_pct` nor `model` changed; a new/cleared session has no prior file, so it always writes and pokes (guaranteeing the cold-start nudge).
+- **`scripts/tmux-status-context-hook.js`** (Node.js) — A Claude Code `statusLine` hook. Receives JSON on stdin with `session_id`, `model.id`, `context_window`, and the live `effort.level` / `thinking.enabled`, normalizes autocompact (16.5% reserved buffer), and writes atomic JSON `{used_pct, model, effort, thinking, timestamp}` to `~/.cache/tmux-status/claude-ctx-{sessionId}.json`, then pokes the daemon. Carrying `model` lets the daemon render a fresh/`/clear`'d session before any assistant reply; carrying `effort` is what makes the bar track the header's live effort (incl. mid-session Shift+Tab changes) instead of a frozen `/effort` transcript echo. To avoid waste it reads the prior bridge and skips the write+poke when `used_pct`, `model`, `effort`, and `thinking` are all unchanged; a new/cleared session has no prior file, so it always writes and pokes (guaranteeing the cold-start nudge).
 
 ### Quota Fetching (HTTP server + client)
 
@@ -66,9 +66,8 @@ The fork-free refactor moved heavy work off the render path, but tmux still spaw
 | `~/.config/tmux-status/settings.conf` | User settings (clock, banner, quota source) |
 | `~/.config/tmux-status/windows.json` | Session launcher config |
 | `~/.config/tmux-status/claude-usage-key.json` | Session key for quota API |
-| `~/.cache/tmux-status/claude-ctx-*.json` | Context bridge files (written by hook) |
+| `~/.cache/tmux-status/claude-ctx-*.json` | Context/effort bridge files (`used_pct`, `model`, live `effort`/`thinking` — written by hook) |
 | `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by renderer from server response) |
-| `~/.cache/tmux-status/claude-daily-cost.json` | Daily token cost cache (60s TTL, recomputed from all today's JSONLs) |
 | `~/.cache/tmux-status/render/pane-<pid>.env` | Per-pane render cache (written by the daemon, sourced by the thin readers) |
 | `~/.cache/tmux-status/render/renderd.lock` | Render daemon `flock` singleton guard; first line is the daemon pid (read by `tmux-status-poke`) |
 
@@ -77,7 +76,7 @@ The fork-free refactor moved heavy work off the render path, but tmux still spaw
 - **Atomic writes**: All bridge/cache files use temp-file + rename to avoid partial reads.
 - **Silent failure**: Scripts exit 0 and output nothing when data is unavailable (no Claude running, no quota key, etc.).
 - **Color palette**: 256-color codes throughout. Gradient bars shift blue→green→yellow→orange→red as usage increases. Segment labels use a fixed pastel palette (see README for reference table).
-- **tmux string formatting**: Lines 0–2 use `#(script args)` shell expansion. Line 3 is the verbatim default tmux status format template relocated from `status-format[0]`.
+- **tmux string formatting**: Lines 0–1 use `#(script args)` shell expansion. Line 2 is the verbatim default tmux status format template relocated from `status-format[0]`.
 
 ## Task Tracking
 
