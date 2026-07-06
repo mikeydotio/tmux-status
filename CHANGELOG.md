@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.5.3] - 2026-07-05
+
+### Documentation
+- note bottle as a make test-server dependency (6f85623)
+
+_[manual]_
+
 ## [v2.5.2] - 2026-07-05
 
 ### Testing
