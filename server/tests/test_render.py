@@ -279,11 +279,30 @@ class TestReadBridge(unittest.TestCase):
 
     def test_empty_sid_short_circuits_to_defaults(self):
         b = render.read_bridge("", self.tmp, default=3)
-        self.assertEqual(b, {"used_pct": 3, "model": ""})
+        self.assertEqual(b, {"used_pct": 3, "model": "", "effort": "", "has_thinking": None})
 
     def test_missing_file_returns_defaults(self):
         b = render.read_bridge("c1", self.tmp)
-        self.assertEqual(b, {"used_pct": 0, "model": ""})
+        self.assertEqual(b, {"used_pct": 0, "model": "", "effort": "", "has_thinking": None})
+
+    def test_reads_live_effort_and_thinking(self):
+        # The statusLine hook writes the live session effort/thinking into the
+        # bridge; read_bridge surfaces them so the daemon can prefer them.
+        _write(os.path.join(self.tmp, ".cache", "tmux-status", "claude-ctx-c1.json"),
+               json.dumps({"used_pct": 5, "model": "claude-opus-4-8",
+                           "effort": "xhigh", "thinking": True}))
+        b = render.read_bridge("c1", self.tmp)
+        self.assertEqual(b["effort"], "xhigh")
+        self.assertIs(b["has_thinking"], True)
+
+    def test_absent_effort_thinking_are_falsy_defaults(self):
+        # Older bridges predate these keys -> effort "" and has_thinking None so
+        # render_once falls back to the transcript/settings-derived values.
+        _write(os.path.join(self.tmp, ".cache", "tmux-status", "claude-ctx-c1.json"),
+               json.dumps({"used_pct": 5, "model": "claude-opus-4-8"}))
+        b = render.read_bridge("c1", self.tmp)
+        self.assertEqual(b["effort"], "")
+        self.assertIsNone(b["has_thinking"])
 
 
 # ── Quota ──────────────────────────────────────────────────────────────────
@@ -329,47 +348,6 @@ class TestComputeQuotaVars(unittest.TestCase):
         self.assertEqual(q["five_hour_pct"], "X")
 
 
-# ── Cost ───────────────────────────────────────────────────────────────────
-class TestCost(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-
-    def test_fmt_cost_thresholds(self):
-        self.assertEqual(render._fmt_cost(0.5), "0.50")
-        self.assertEqual(render._fmt_cost(12.34), "12.3")
-        self.assertEqual(render._fmt_cost(150.0), "150")
-
-    def test_model_family(self):
-        self.assertEqual(render._model_family("claude-opus-4-8"), "opus")
-        self.assertEqual(render._model_family("claude-haiku-4-5"), "haiku")
-        self.assertEqual(render._model_family("claude-sonnet-4-6"), "sonnet")
-        self.assertEqual(render._model_family("something-weird"), "sonnet")
-
-    def test_session_cost_known_usage(self):
-        tr = os.path.join(self.tmp, "t.jsonl")
-        _write(tr, json.dumps({"type": "assistant", "message": {
-            "model": "claude-opus-4-8",
-            "usage": {"input_tokens": 1000, "output_tokens": 500,
-                      "cache_creation_input_tokens": 200, "cache_read_input_tokens": 3000}}}) + "\n")
-        # (1000*15 + 500*75 + 200*18.75 + 3000*1.5) / 1e6 = 0.06075
-        self.assertAlmostEqual(render.compute_session_cost(tr), 0.06075, places=6)
-
-    def test_session_cost_includes_subagents(self):
-        tr = os.path.join(self.tmp, "t.jsonl")
-        _write(tr, json.dumps({"type": "assistant", "message": {
-            "model": "claude-haiku-4-5", "usage": {"input_tokens": 1000}}}) + "\n")
-        sub = os.path.join(self.tmp, "t", "subagents", "s.jsonl")
-        _write(sub, json.dumps({"type": "assistant", "message": {
-            "model": "claude-haiku-4-5", "usage": {"input_tokens": 1000}}}) + "\n")
-        # two files * (1000 * 1.0 / 1e6) = 0.002
-        self.assertAlmostEqual(render.compute_session_cost(tr), 0.002, places=6)
-
-    def test_daily_cost_uses_fresh_cache(self):
-        cache = os.path.join(self.tmp, ".cache", "tmux-status", "claude-daily-cost.json")
-        _write(cache, json.dumps({"daily_cost": 3.21, "timestamp": time.time()}))
-        self.assertEqual(render.compute_daily_cost(self.tmp), 3.21)
-
-
 # ── Env-line contract ──────────────────────────────────────────────────────
 class TestClaudeEnvLines(unittest.TestCase):
     def setUp(self):
@@ -378,23 +356,23 @@ class TestClaudeEnvLines(unittest.TestCase):
                   "key_expiry_warn": False}
 
     def test_exact_lines(self):
-        lines = render.claude_env_lines("claude-opus-4-8", "high", True, 37, self.q, 0.06, 1.23)
+        lines = render.claude_env_lines("claude-opus-4-8", "high", True, 37, self.q)
         self.assertEqual(lines[0], "MODEL=claude-opus-4-8")
         self.assertEqual(lines[1], "SHORT_MODEL='Opus 4.8'")  # space => shlex-quoted
         self.assertEqual(lines[2], "USED_PCT=37")             # bare int
         self.assertEqual(lines[3], "EFFORT=high")
         self.assertEqual(lines[4], "HAS_THINKING=1")
-        # shlex.quote leaves simple numeric strings bare (matches the original heredoc)
-        self.assertIn("SESSION_COST=0.06", lines)
-        self.assertIn("DAILY_COST=1.23", lines)
+        # Cost keys are gone entirely (dollar display + computation removed).
+        self.assertFalse(any(ln.startswith("SESSION_COST=") for ln in lines))
+        self.assertFalse(any(ln.startswith("DAILY_COST=") for ln in lines))
 
     def test_thinking_flag_zero(self):
-        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, self.q, 0.0, 0.0)
+        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, self.q)
         self.assertEqual(lines[4], "HAS_THINKING=0")
 
     def test_quota_X_value_quoted(self):
         q = dict(self.q, five_hour_pct="X")
-        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, q, 0.0, 0.0)
+        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, q)
         self.assertIn("QUOTA_5H_PCT=X", lines)
 
 
@@ -486,8 +464,8 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         self.assertIn("USED_PCT=3", content)
 
     def test_render_once_renders_from_bridge_when_transcript_absent(self):
-        # Brand-new session: no transcript file yet. Bridge supplies the model;
-        # session cost is $0.00 (no transcript to total).
+        # Brand-new session: no transcript file yet. Bridge supplies the model so
+        # the Claude line renders instead of going blank.
         home = self.tmp
         _write(os.path.join(home, ".cache", "tmux-status", "claude-ctx-sid-2.json"),
                json.dumps({"used_pct": 0, "model": "claude-sonnet-4-6"}))
@@ -500,7 +478,31 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         with open(os.path.join(self.render_dir, "pane-4243.env")) as f:
             content = f.read()
         self.assertIn("MODEL=claude-sonnet-4-6", content)
-        self.assertIn("SESSION_COST=0.00", content)
+        self.assertNotIn("SESSION_COST", content)
+        self.assertNotIn("DAILY_COST", content)
+
+    def test_render_once_prefers_live_bridge_effort_over_transcript(self):
+        # The transcript froze "/effort high", but the live statusLine bridge says
+        # xhigh (a mid-session Shift+Tab change). The bar must show the live value.
+        home = self.tmp
+        _write(os.path.join(home, ".claude", "projects", "-work-z", "sid-3.jsonl"),
+               "\n".join([
+                   json.dumps({"type": "user", "sessionId": "sid-3", "message": {
+                       "content": "<local-command-stdout>Set effort level to high</local-command-stdout>"}}),
+                   json.dumps({"type": "assistant",
+                               "message": {"model": "claude-opus-4-8", "content": []}}),
+               ]) + "\n")
+        _write(os.path.join(home, ".cache", "tmux-status", "claude-ctx-sid-3.json"),
+               json.dumps({"used_pct": 5, "model": "claude-opus-4-8", "effort": "xhigh"}))
+        self._render_with(
+            home,
+            [{"pid": 4244, "path": "/var/empty"}],
+            [{"pid": 5002, "cwd": "/work/z", "session_id": "sid-3", "file": "f"}],
+            {5002: 4244},
+        )
+        with open(os.path.join(self.render_dir, "pane-4244.env")) as f:
+            content = f.read()
+        self.assertIn("EFFORT=xhigh", content)
 
 
 # ── PATH hardening (launchd/systemd minimal PATH) ──────────────────────────

@@ -46,9 +46,9 @@ while IFS= read -r line; do
     esac
 done < "$CONF"
 
-# Guard against a vacuous gate: we expect the 3 reader lines (model, quota, git).
-if [ "$readers" -lt 3 ]; then
-    die "expected >=3 reader invocations in overlay, found $readers — gate may be matching nothing"
+# Guard against a vacuous gate: we expect the 2 reader lines (combined claude, git).
+if [ "$readers" -lt 2 ]; then
+    die "expected >=2 reader invocations in overlay, found $readers — gate may be matching nothing"
 fi
 
 # ── Pane-safety gate (view-mode hijack regression) ─────────────

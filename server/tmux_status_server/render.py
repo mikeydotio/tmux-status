@@ -54,12 +54,6 @@ def _ensure_path():
     missing = [d for d in _EXTRA_PATH if d not in cur]
     os.environ["PATH"] = os.pathsep.join(missing + cur) if missing else os.environ.get("PATH", "")
 
-PRICING = {
-    "opus":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
-    "sonnet": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
-    "haiku":  {"input": 1.0,  "output": 5.0,  "cache_write": 1.25,  "cache_read": 0.10},
-}
-
 
 # ── Process tree ───────────────────────────────────────────────────────────
 def _parse_ps_output(text):
@@ -265,15 +259,19 @@ def parse_transcript(transcript):
 def read_bridge(conversation_id, home, default=0):
     """Read the statusline-hook bridge file (tmux-status dir, then legacy coderig).
 
-    Returns ``{"used_pct", "model"}``. The hook writes both keys in real time —
-    including on a fresh/``/clear``'d session BEFORE the transcript has any
-    assistant message — so the bridge is what lets the daemon render the Claude
-    lines without waiting for the first reply. Legacy coderig bridges predate the
-    ``model`` key, so ``model`` defaults to ``""`` there (forcing the transcript
+    Returns ``{"used_pct", "model", "effort", "has_thinking"}``. The hook writes
+    these in real time — including on a fresh/``/clear``'d session BEFORE the
+    transcript has any assistant message — so the bridge is what lets the daemon
+    render the Claude lines without waiting for the first reply. Crucially it also
+    carries the LIVE session ``effort`` (the statusLine payload's ``effort.level``,
+    which reflects mid-session Shift+Tab changes) and ``thinking`` toggle, so the
+    status bar tracks the header instead of a frozen ``/effort`` transcript echo.
+    Legacy/older bridges predate these keys, so ``model``/``effort`` default to
+    ``""`` and ``has_thinking`` to ``None`` there (forcing the transcript
     fallback). An empty ``conversation_id`` short-circuits with the defaults and
     touches no disk, preserving the non-Claude-pane contract.
     """
-    result = {"used_pct": default, "model": ""}
+    result = {"used_pct": default, "model": "", "effort": "", "has_thinking": None}
     if not conversation_id:
         return result
     for cache_dir in (
@@ -288,6 +286,9 @@ def read_bridge(conversation_id, home, default=0):
             continue
         result["used_pct"] = bd.get("used_pct", default)
         result["model"] = bd.get("model", "") or ""
+        result["effort"] = bd.get("effort", "") or ""
+        _thinking = bd.get("thinking", None)
+        result["has_thinking"] = _thinking if isinstance(_thinking, bool) else None
         return result
     return result
 
@@ -481,108 +482,6 @@ def compute_quota_vars(settings, home):
     }
 
 
-# ── Cost ───────────────────────────────────────────────────────────────────
-def _model_family(model_name):
-    m = model_name.lower()
-    if "opus" in m:
-        return "opus"
-    if "haiku" in m:
-        return "haiku"
-    return "sonnet"
-
-
-def _calc_cost_file(path):
-    """Sum token costs across all assistant messages in a JSONL file."""
-    cost = 0.0
-    try:
-        with open(path) as f:
-            for line in f:
-                try:
-                    d = json.loads(line)
-                    if d.get("type") != "assistant":
-                        continue
-                    msg = d.get("message", {})
-                    if not isinstance(msg, dict):
-                        continue
-                    usage = msg.get("usage")
-                    mdl = msg.get("model", "")
-                    if not usage or not mdl:
-                        continue
-                    prices = PRICING[_model_family(mdl)]
-                    cost += (
-                        usage.get("input_tokens", 0) * prices["input"]
-                        + usage.get("output_tokens", 0) * prices["output"]
-                        + usage.get("cache_creation_input_tokens", 0) * prices["cache_write"]
-                        + usage.get("cache_read_input_tokens", 0) * prices["cache_read"]
-                    ) / 1_000_000
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return cost
-
-
-def compute_session_cost(transcript):
-    """Cost of the current transcript plus its subagents."""
-    session_cost = _calc_cost_file(transcript)
-    stem = os.path.splitext(os.path.basename(transcript))[0]
-    subagents_dir = os.path.join(os.path.dirname(transcript), stem, "subagents")
-    if os.path.isdir(subagents_dir):
-        for sa in glob.glob(os.path.join(subagents_dir, "*.jsonl")):
-            session_cost += _calc_cost_file(sa)
-    return session_cost
-
-
-def compute_daily_cost(home):
-    """Today's cost across all projects, cached with a 60s TTL (global per tick)."""
-    daily_cache = os.path.join(home, ".cache", "tmux-status", "claude-daily-cost.json")
-    daily_cost = 0.0
-    daily_fresh = False
-    try:
-        with open(daily_cache) as dcf:
-            _dc = json.load(dcf)
-        if time.time() - _dc.get("timestamp", 0) < 60:
-            daily_cost = _dc.get("daily_cost", 0.0)
-            daily_fresh = True
-    except Exception:
-        pass
-
-    if not daily_fresh:
-        today_start = datetime.now().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).timestamp()
-        projects_dir = os.path.join(home, ".claude", "projects")
-        if os.path.isdir(projects_dir):
-            for _root, _dirs, _files in os.walk(projects_dir):
-                for _fname in _files:
-                    if not _fname.endswith(".jsonl"):
-                        continue
-                    _fpath = os.path.join(_root, _fname)
-                    try:
-                        if os.stat(_fpath).st_mtime >= today_start:
-                            daily_cost += _calc_cost_file(_fpath)
-                    except Exception:
-                        continue
-        try:
-            os.makedirs(os.path.dirname(daily_cache), exist_ok=True)
-            tmp = f"{daily_cache}.{os.getpid()}.tmp"
-            with open(tmp, "w") as f:
-                json.dump({"daily_cost": round(daily_cost, 2), "timestamp": time.time()}, f)
-            os.replace(tmp, daily_cache)
-        except Exception:
-            pass
-    return daily_cost
-
-
-def _fmt_cost(c):
-    if c >= 100:
-        return f"{c:.0f}"
-    elif c >= 10:
-        return f"{c:.1f}"
-    else:
-        return f"{c:.2f}"
-
-
 # ── Git ────────────────────────────────────────────────────────────────────
 def _git(path, args, timeout=3):
     try:
@@ -666,8 +565,8 @@ def compute_git_line(path, home):
 
 
 # ── Env assembly ───────────────────────────────────────────────────────────
-def claude_env_lines(model, effort, has_thinking, used_pct, quota_vars, session_cost, daily_cost):
-    """Build the exact ``KEY=value`` lines the old heredoc emitted for ``eval``."""
+def claude_env_lines(model, effort, has_thinking, used_pct, quota_vars):
+    """Build the ``KEY=value`` lines the thin reader sources for the Claude line."""
     return [
         "MODEL=" + shlex.quote(model),
         "SHORT_MODEL=" + shlex.quote(format_model(model)),
@@ -680,8 +579,6 @@ def claude_env_lines(model, effort, has_thinking, used_pct, quota_vars, session_
         "QUOTA_7D_PCT=" + shlex.quote(str(quota_vars["seven_day_pct"])),
         "QUOTA_7D_REMAIN=" + shlex.quote(quota_vars["seven_day_remain"]),
         "KEY_EXPIRY_WARN=" + ("1" if quota_vars["key_expiry_warn"] else "0"),
-        "SESSION_COST=" + shlex.quote(_fmt_cost(session_cost)),
-        "DAILY_COST=" + shlex.quote(_fmt_cost(daily_cost)),
     ]
 
 
@@ -754,13 +651,13 @@ def render_once(home=None, owner_pid=None):
     sessions = load_sessions(claude_dir)
 
     # Pass 1 — resolve each pane to its Claude session ONCE: the live session
-    # file keys the exact transcript (model/effort/cost) and the context bridge
-    # (used_pct + model). The model is the transcript's once an assistant reply
-    # exists, else the bridge's — so a fresh or /clear'd session (whose new
-    # transcript has no assistant message yet) still renders instead of going
-    # blank. Only fetch global quota/daily-cost if at least one pane resolves a
-    # model (matches the old script, which never touched quota for non-Claude
-    # panes). parse_transcript runs here and is reused in pass 2 — never twice.
+    # file keys the exact transcript (model/effort) and the context bridge
+    # (used_pct + model + live effort). The model is the transcript's once an
+    # assistant reply exists, else the bridge's — so a fresh or /clear'd session
+    # (whose new transcript has no assistant message yet) still renders instead of
+    # going blank. Only fetch global quota if at least one pane resolves a model
+    # (matches the old script, which never touched quota for non-Claude panes).
+    # parse_transcript runs here and is reused in pass 2 — never twice.
     _EMPTY_PARSED = {"model": "", "effort": "auto", "has_thinking": False, "conversation_id": ""}
     resolved = []
     any_claude = False
@@ -776,11 +673,9 @@ def render_once(home=None, owner_pid=None):
         resolved.append((pane, transcript, parsed, bridge, model))
 
     quota_vars = None
-    daily_cost = 0.0
     if any_claude:
         settings = load_settings(home)
         quota_vars = compute_quota_vars(settings, home)
-        daily_cost = compute_daily_cost(home)
 
     # Pass 2 — pure assembly + write (no re-resolution, no second transcript parse).
     live_pids = set()
@@ -788,10 +683,18 @@ def render_once(home=None, owner_pid=None):
         live_pids.add(pane["pid"])
         lines = []
         if model and quota_vars is not None:
-            session_cost = compute_session_cost(transcript) if transcript else 0.0
+            # Effort precedence: live statusLine hook (bridge) > transcript
+            # /effort echo > settings.json default > "auto". parse_transcript
+            # already folds the last three, so the bridge value simply wins when
+            # present. Same for the thinking toggle (None = bridge silent).
+            effort = bridge["effort"] or parsed["effort"]
+            has_thinking = (
+                bridge["has_thinking"]
+                if bridge["has_thinking"] is not None
+                else parsed["has_thinking"]
+            )
             lines.extend(claude_env_lines(
-                model, parsed["effort"], parsed["has_thinking"],
-                bridge["used_pct"], quota_vars, session_cost, daily_cost,
+                model, effort, has_thinking, bridge["used_pct"], quota_vars,
             ))
         lines.append("GIT_LINE=" + shlex.quote(compute_git_line(pane["path"], home)))
         lines.append("RENDER_TS=" + str(render_ts))

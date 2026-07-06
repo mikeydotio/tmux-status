@@ -47,28 +47,28 @@ QUOTA_5H_REMAIN=40m
 QUOTA_7D_PCT=64
 QUOTA_7D_REMAIN=10.0h
 KEY_EXPIRY_WARN=0
-SESSION_COST=0.06
-DAILY_COST=1.23
 GIT_LINE='~/work : main (clean)'
 RENDER_TS=$1
 EOF
 }
 
 # ── Test 1: fresh cache renders the expected lines ─────────────
-echo "TEST 1: daemon cache -> reader renders model/quota/git..."
+echo "TEST 1: daemon cache -> reader renders combined-claude/git..."
 write_cache 9999999999  # far-future TS => fresh, no stale marker
-model_out="$(bash "$CLAUDE_READER" "$PANE" model)"
-quota_out="$(bash "$CLAUDE_READER" "$PANE" quota)"
+claude_out="$(bash "$CLAUDE_READER" "$PANE")"
 git_out="$(bash "$GIT_READER" "$PANE")"
 
-case "$model_out" in *"Opus 4.8"*"high"*"37%"*) pass "model line content" ;; *) die "model line: $model_out" ;; esac
-case "$model_out" in *"⋯"*) die "fresh cache must NOT show stale marker: $model_out" ;; *) pass "no stale marker when fresh" ;; esac
-case "$quota_out" in *"40m"*"6%"*"64%"*'$0.06'*'$1.23'*) pass "quota line content" ;; *) die "quota line: $quota_out" ;; esac
+# One combined line: model + effort + ctx%, then the 5h/7d quota bars.
+case "$claude_out" in *"Opus 4.8"*"high"*"37%"*) pass "model+effort+ctx in combined line" ;; *) die "combined line: $claude_out" ;; esac
+case "$claude_out" in *"40m"*"6%"*"64%"*) pass "quota bars in combined line" ;; *) die "combined line: $claude_out" ;; esac
+# Cost was removed: no dollar amount may appear anywhere on the line.
+case "$claude_out" in *'$'*) die "cost/dollar must be gone from the combined line: $claude_out" ;; *) pass "no dollar amounts" ;; esac
+case "$claude_out" in *"⋯"*) die "fresh cache must NOT show stale marker: $claude_out" ;; *) pass "no stale marker when fresh" ;; esac
 [ "$git_out" = "$EXPECT_GIT" ] && pass "git line content" || die "git line: $git_out"
 
 # ── Test 2: cache miss renders nothing, exits 0 ────────────────
 echo "TEST 2: cache miss -> silent, exit 0..."
-miss_out="$(bash "$CLAUDE_READER" 999999 model)"; miss_rc=$?
+miss_out="$(bash "$CLAUDE_READER" 999999)"; miss_rc=$?
 [ -z "$miss_out" ] && [ "$miss_rc" -eq 0 ] && pass "claude reader silent on miss" || die "miss out=[$miss_out] rc=$miss_rc"
 gmiss_out="$(bash "$GIT_READER" 999999)"; gmiss_rc=$?
 [ -z "$gmiss_out" ] && [ "$gmiss_rc" -eq 0 ] && pass "git reader silent on miss" || die "git miss out=[$gmiss_out] rc=$gmiss_rc"
@@ -86,10 +86,10 @@ SHIM
     chmod +x "$SHIMBIN/$cmd"
 done
 rm -f "$SHIMBIN"/CALLED-*
-stale_model="$(PATH="$SHIMBIN:$PATH" bash "$CLAUDE_READER" "$PANE" model)"; stale_rc=$?
+stale_claude="$(PATH="$SHIMBIN:$PATH" bash "$CLAUDE_READER" "$PANE")"; stale_rc=$?
 stale_git="$(PATH="$SHIMBIN:$PATH" bash "$GIT_READER" "$PANE")"
 # Still renders last-known content and exits 0:
-case "$stale_model" in *"Opus 4.8"*"37%"*) pass "stale: last-known model still rendered" ;; *) die "stale model: $stale_model" ;; esac
+case "$stale_claude" in *"Opus 4.8"*"37%"*) pass "stale: last-known model still rendered" ;; *) die "stale claude: $stale_claude" ;; esac
 [ "$stale_rc" -eq 0 ] && pass "stale: reader exit 0" || die "stale rc=$stale_rc"
 [ "$stale_git" = "$EXPECT_GIT" ] && pass "stale: last-known git still rendered" || die "stale git: $stale_git"
 # CRITICAL: no heavy tool was ever forked.

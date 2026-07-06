@@ -34,6 +34,15 @@ process.stdin.on('end', () => {
     // cause of both Claude lines going blank until work started).
     const model = (data.model && data.model.id) || '';
 
+    // The statusLine payload carries the LIVE session effort (effort.level:
+    // low|medium|high|xhigh|max) and thinking toggle — reflecting mid-session
+    // Shift+Tab changes immediately. Bridging them lets the render daemon show
+    // the real effort instead of a frozen /effort transcript echo. The effort
+    // object is absent for models without a reasoning-effort param, so default
+    // to '' (the daemon then falls back to the transcript/settings value).
+    const effort = (data.effort && data.effort.level) || '';
+    const thinking = !!(data.thinking && data.thinking.enabled);
+
     // Prior bridge: used to carry used_pct when context_window is momentarily
     // absent, and to dedupe — the statusLine hook fires often, but we only want
     // to write + wake the daemon on an actual change or a brand-new session.
@@ -69,10 +78,12 @@ process.stdin.on('end', () => {
 
     // Dedupe: if the bridge already holds identical values there is nothing new
     // for the daemon to pick up — skip the write AND the poke (no wasteful fork
-    // on every idle status render). A new/`/clear`'d session has no prior file
-    // (or different values), so it always writes and pokes — guaranteeing the
-    // cold-start nudge that fills the Claude lines in without waiting for work.
-    if (prev && (prev.used_pct || 0) === usedPct && (prev.model || '') === model) return;
+    // on every idle status render). effort/thinking are part of the comparison
+    // so an effort-only change (Shift+Tab) still writes + pokes. A new/`/clear`'d
+    // session has no prior file (or different values), so it always writes and
+    // pokes — guaranteeing the cold-start nudge that fills the Claude lines in.
+    if (prev && (prev.used_pct || 0) === usedPct && (prev.model || '') === model &&
+        (prev.effort || '') === effort && !!prev.thinking === thinking) return;
 
     try {
       fs.mkdirSync(bridgeDir, { recursive: true });
@@ -80,6 +91,8 @@ process.stdin.on('end', () => {
       fs.writeFileSync(tmpPath, JSON.stringify({
         used_pct: usedPct,
         model: model,
+        effort: effort,
+        thinking: thinking,
         timestamp: Math.floor(Date.now() / 1000)
       }));
       fs.renameSync(tmpPath, bridgePath);

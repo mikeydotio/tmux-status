@@ -2,10 +2,12 @@
 # test_context_hook.sh — unit test for the Claude statusLine bridge hook
 # (scripts/tmux-status-context-hook.js).
 #
-# Asserts the bridge file now carries the model (so the render daemon can show
-# the Claude lines on a fresh/`/clear`'d session before any assistant reply),
-# that a context-less payload still records the model, that an identical re-fire
-# is deduped (no rewrite, no wasteful poke), and that malformed input exits 0.
+# Asserts the bridge file carries the model AND the live session effort/thinking
+# (so the render daemon shows the Claude lines with the real effort on a
+# fresh/`/clear`'d session before any assistant reply), that a context-less
+# payload still records the model, that an identical re-fire is deduped (no
+# rewrite, no wasteful poke) while an effort-only change still rewrites, and that
+# malformed input exits 0.
 
 set -u
 
@@ -69,6 +71,16 @@ B2="$BRIDGE_DIR/claude-ctx-hooktest-2.json"
 [ -f "$B2" ] || fail "bridge not written without context_window"
 grep -q '"model":"claude-sonnet-4-6"' "$B2" || fail "model missing for ctx-less payload"
 grep -q '"used_pct":0' "$B2" || fail "used_pct default missing for ctx-less payload"
+
+# 4b) Live effort/thinking from the statusLine payload are bridged, and an
+#     effort-only change (identical used_pct + model) is NOT deduped away.
+echo '{"session_id":"hooktest-3","model":{"id":"claude-opus-4-8"},"context_window":{"used_percentage":10,"remaining_percentage":90},"effort":{"level":"high"},"thinking":{"enabled":true}}' | run_hook
+B3="$BRIDGE_DIR/claude-ctx-hooktest-3.json"
+grep -q '"effort":"high"' "$B3" || fail "effort not bridged ($(cat "$B3"))"
+grep -q '"thinking":true' "$B3" || fail "thinking not bridged ($(cat "$B3"))"
+
+echo '{"session_id":"hooktest-3","model":{"id":"claude-opus-4-8"},"context_window":{"used_percentage":10,"remaining_percentage":90},"effort":{"level":"xhigh"},"thinking":{"enabled":true}}' | run_hook
+grep -q '"effort":"xhigh"' "$B3" || fail "effort-only change was deduped away ($(cat "$B3"))"
 
 # 5) Malformed stdin still exits 0 (silent-failure contract).
 echo 'not json' | node "$HOOK" || fail "hook must exit 0 on malformed input"
