@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.5.2] - 2026-07-05
+
+### Testing
+- expect the 7 current SCRIPTS entries (b1a5056)
+
+_[manual]_
+
 ## [v2.5.1] - 2026-07-05
 
 ### Changed
