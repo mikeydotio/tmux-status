@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.5.1] - 2026-07-05
+
+### Changed
+- bracket tabs colored to match name, drop status-left hostname (3d18e25)
+
+_[manual]_
+
 ## [v2.5.0] - 2026-07-05
 
 ### Added
