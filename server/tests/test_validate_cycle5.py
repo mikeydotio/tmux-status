@@ -279,7 +279,7 @@ class TestTS35LegacyScriptRemoval(unittest.TestCase):
                          "SCRIPTS array must not include tmux-status-quota-poll")
 
     def test_install_sh_scripts_array_has_expected_scripts(self):
-        """install.sh SCRIPTS array contains exactly the 5 expected scripts."""
+        """install.sh SCRIPTS array contains exactly the 7 expected scripts."""
         with open(INSTALL_SH) as f:
             content = f.read()
         match = re.search(r'SCRIPTS=\(([^)]+)\)', content)
@@ -288,8 +288,10 @@ class TestTS35LegacyScriptRemoval(unittest.TestCase):
         expected = {
             "tmux-claude-status",
             "tmux-git-status",
+            "tmux-status-poke",
             "tmux-status-apply-config",
             "tmux-status-session",
+            "tmux-status-prune-clients",
             "tmux-status-context-hook.js",
         }
         self.assertEqual(set(scripts), expected,
