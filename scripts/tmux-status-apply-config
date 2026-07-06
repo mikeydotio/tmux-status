@@ -28,8 +28,8 @@ else
 fi
 
 # ── Apply top banner ──────────────────────────────────────────
-# Uses pane-border-status to render a hostname banner at the top of
-# each pane, framed by double-line box-drawing characters (═══╣ ╠═══).
+# Uses pane-border-status to render a "HOSTNAME · window-name" banner at the top
+# of each pane, framed by double-line box-drawing characters (═══╣ ╠═══).
 if [ "$SHOW_TOP_BANNER" = "true" ]; then
     # Precompute the hostname ONCE instead of forking `hostname` on every render.
     # A `#(...)` in pane-border-format forks a shell each status-interval tick; under
@@ -46,7 +46,9 @@ if [ "$SHOW_TOP_BANNER" = "true" ]; then
     tmux set -g pane-border-lines double
     tmux set -g pane-active-border-style "fg=colour${TOP_BANNER_COLOR}"
     tmux set -g pane-border-style "fg=colour${TOP_BANNER_COLOR}"
-    tmux set -g pane-border-format "#[align=centre,bold]╣ ${HOST} ╠"
+    # Hostname is a precomputed static string (fork-free); #{window_name} is a
+    # native tmux format (also fork-free) that updates live as the window renames.
+    tmux set -g pane-border-format "#[align=centre,bold]╣ ${HOST} · #{window_name} ╠"
 else
     tmux set -gu pane-border-status
     tmux set -gu pane-border-lines
