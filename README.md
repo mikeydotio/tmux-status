@@ -19,13 +19,15 @@ The status bar has three lines, rendered at the bottom of the terminal:
  ~/projects/myapp : main (dirty, ↑2)
 ```
 
-**Line 2** — Session bar with hostname, window tabs, and clock:
+**Line 2** — Window tabs and clock:
 
 ```
- myhost: │bash│ ┃claude┃ │codex│                        「12:30」
-         ╰────╯ ╰──────╯ ╰────╯                        ╰─clock─╯
-         inactive active   inactive
+ [bash] [claude] [codex]                                 「12:30」
+ ╰────╯ ╰──────╯ ╰────╯                                  ╰─clock─╯
+ inactive active  inactive
 ```
+
+Each tab's brackets are the same color as the window name they wrap (bright white for the active tab; white, or yellow on unseen activity, for inactive tabs).
 
 ### Top Banner (optional)
 
@@ -67,9 +69,8 @@ Segment labels use a pastel palette:
 | Context %    | Sage green    | 150       |
 | 5h quota     | Light peach   | 223       |
 | 7d quota     | Soft wheat    | 186       |
-| Hostname     | Blue          | 4         |
-| Active tab   | Bright blue   | 12/15     |
-| Inactive tab | Blue/white    | 4/7       |
+| Active tab   | Bright white (bold) | 15  |
+| Inactive tab | White         | 7         |
 | Activity     | Yellow        | 3         |
 | Clock        | Blue brackets | 4         |
 | Top banner   | Orange        | 208       |
@@ -176,7 +177,7 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 **Sets** (status bar and optional banner):
 - 3-line status bar layout and formatting
 - Window tab styling (blue borders, yellow activity, bold active)
-- Status-left (hostname) and status-right (clock)
+- Status-right (clock)
 - Activity monitoring
 - Automatic window naming (with Claude `✧` prefix detection)
 - Pane border status/style (only when `SHOW_TOP_BANNER=true`)
