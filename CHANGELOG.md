@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.5.0] - 2026-07-05
+
+### Added
+- show current window name in the top banner (56b7e8f)
+
+### Changed
+- one Claude line, no cost, live effort (a85e9a1)
+
+### Documentation
+- 3-line layout, live effort, window-name banner (271253e)
+
+### Testing
+- add live integration test proving hooks can't hijack a pane (6e09734)
+
+_[manual]_
+
 ## [v2.4.1] - 2026-07-03
 
 ### Fixed
