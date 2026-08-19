@@ -8,6 +8,10 @@
     {
       "name": "claude",
       "commands": ["claude"]
+    },
+    {
+      "name": "codex",
+      "commands": ["codex"]
     }
   ]
 }

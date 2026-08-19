@@ -1,17 +1,28 @@
 # tmux-status
 
-A 3-line tmux status bar for Claude Code developers. Shows Claude session info (model/effort/context, quota), git status, and a clean window bar — without touching your keybindings or preferences.
+A 3-line tmux status bar for Claude Code and Codex developers. Shows the active
+agent's model, reasoning effort, context, and quota alongside git status and a
+clean window bar — without touching your keybindings or preferences.
 
 ## Preview
 
 The status bar has three lines, rendered at the bottom of the terminal:
 
-**Line 0** — Claude Code session (only visible when the active pane is running Claude):
+**Line 0** — agent session (only visible when the active pane is running Claude Code or Codex):
 
 ```
  Opus 4.6 1M (high) │ Ctx: ▅ 62% │ 3.2h: ▃ 28% │ 5.1d: ▂ 14%
  ╰─ model ──╯ ╰effort╯    ╰context╯    ╰─5h quota─╯   ╰─7d quota─╯
 ```
+
+Codex uses the same layout and includes each quota window before its reset
+countdown:
+
+```
+ GPT-5.6 Sol (xhigh) │ Ctx: ▂ 21% │ 7d/5.1d: ▂ 14%
+```
+
+No provider badge is added; the model name identifies the active agent.
 
 **Line 1** — Filesystem path and git status:
 
@@ -86,7 +97,10 @@ This will:
 2. Symlink scripts to `~/.local/bin/`
 3. Create default config at `~/.config/tmux-status/`
 4. Add one `source-file` line to your tmux.conf
-5. Configure the Claude Code statusLine hook for real-time context tracking
+5. Configure the Claude Code statusLine hook for real-time Claude context tracking
+
+Codex needs no hook or configuration changes; the render daemon reads its local
+open rollout directly.
 
 Then reload tmux:
 
@@ -137,6 +151,9 @@ SHOW_TOP_BANNER=true
 
 # Banner color — 256-color code (default: 208 = orange)
 # TOP_BANNER_COLOR=208
+
+# Optional Codex data directory. Falls back to the daemon's CODEX_HOME, then ~/.codex
+# CODEX_HOME=~/.codex
 ```
 
 After editing, reload tmux config to apply.
@@ -151,6 +168,7 @@ Create `~/.config/tmux-status/windows.json` to define auto-start windows:
   "windows": [
     { "name": "shell", "commands": [] },
     { "name": "claude", "commands": ["claude"] },
+    { "name": "codex", "commands": ["codex"] },
     { "name": "server", "commands": ["cd ~/projects/app", "npm run dev"] }
   ]
 }
@@ -179,7 +197,7 @@ An example file is provided at `~/.config/tmux-status/windows.example.json`.
 - Window tab styling (blue borders, yellow activity, bold active)
 - Status-right (clock)
 - Activity monitoring
-- Automatic window naming (with Claude `✧` prefix detection)
+- Automatic window naming (with Claude/Codex `✧` prefix detection)
 - Pane border status/style (only when `SHOW_TOP_BANNER=true`)
 
 **Does NOT touch:**
@@ -197,7 +215,7 @@ The overlay is sourced at the end of your tmux.conf, so it wins on status-bar op
 **Required:**
 - **tmux 3.2+** (multi-line status support)
 - **bash**
-- **python3** (used by Claude status and session launcher scripts)
+- **python3** (used by the background renderer and session launcher)
 - **git**
 - **node** (used by the Claude Code statusLine hook)
 
@@ -208,6 +226,9 @@ Works on both **macOS** and **Linux**.
 
 ## How It Works
 
+See [Architecture](docs/architecture.md) for the full process-selection, rollout,
+cache, and failure-isolation contracts.
+
 The installer adds a single line to the end of your tmux.conf:
 
 ```tmux
@@ -216,7 +237,16 @@ source-file ~/projects/tmux-status/overlay/status.conf
 
 This overlay file sets only status-bar-related tmux options. Scripts are symlinked to `~/.local/bin/`, so running `git pull` in the install directory updates everything without re-running the installer.
 
-### Claude Code Integration
+### Agent Integration
+
+Line 0 is backed by one provider-neutral per-pane cache. The daemon selects the
+nearest Claude or Codex descendant of the pane process (newest start time breaks
+equal-depth ties), normalizes its local data, and atomically refreshes the cache.
+`tmux-agent-status` only sources that cache and formats it. The historical
+`tmux-claude-status` command remains installed as a compatibility alias for tmux
+configurations already loaded in memory.
+
+#### Claude Code
 
 Line 0 of the status bar shows Claude Code session metadata. There are three data sources, each independent:
 
@@ -237,11 +267,31 @@ Line 0 of the status bar shows Claude Code session metadata. There are three dat
 - Only requires a session key file and `curl_cffi` on the server machine
 - Without it, quota bars are simply omitted from the display
 
-When the active pane isn't running Claude, line 0 is empty (a blank spacer line).
+#### Codex
 
-### Quota Display Setup (Optional)
+Codex model and reasoning effort come from the latest `turn_context` in the
+active rollout. Context usage combines the latest `task_started` context-window
+size with the latest `token_count` total. The same token record supplies zero,
+one, or two local rate-limit windows, displayed as
+`<window>/<reset>: <bar> <percent>`.
 
-The quota system uses an HTTP server that scrapes claude.ai and serves data to the status bar renderer. The installer sets this up automatically on `localhost:7850`.
+To avoid showing a different session's data, the renderer only accepts the exact
+rollout JSONL held open by the selected Codex process: `/proc/<pid>/fd` on Linux,
+or one batched `lsof` snapshot on macOS. If that identity is unavailable or
+ambiguous, Codex line 0 stays blank rather than guessing from recent files.
+
+Set `CODEX_HOME` in `settings.conf` when rollouts live outside the default. The
+precedence is settings, the daemon's `CODEX_HOME` environment, then `~/.codex`.
+The installer does not install Codex hooks, modify `~/.codex/config.toml`, make
+OpenAI API calls, or send Codex quota through the Claude quota server.
+
+When the active pane isn't running either agent, line 0 is empty (a blank spacer line).
+
+### Claude Quota Display Setup (Optional)
+
+Claude's quota system uses an HTTP server that scrapes claude.ai and serves data
+to the status bar renderer. The installer sets this up automatically on
+`localhost:7850`. Codex quota never uses this server.
 
 #### 1. Install curl_cffi (server machine only)
 
@@ -327,7 +377,7 @@ Scripts update automatically via symlinks. Reload tmux config to pick up any ove
 
 ## Troubleshooting
 
-### Status lines show `<'…tmux-claude-status "…" model' didn't start>`
+### Status lines show `<'…tmux-agent-status "…" model' didn't start>`
 
 That message is printed by **tmux itself**, not by tmux-status. tmux renders the
 status bar's `#()` segments by `fork()`-ing a child and creating a

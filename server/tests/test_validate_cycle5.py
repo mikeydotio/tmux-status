@@ -23,6 +23,7 @@ SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 INSTALL_SH = os.path.join(REPO_ROOT, "install.sh")
 CONTEXT_HOOK = os.path.join(SCRIPTS_DIR, "tmux-status-context-hook.js")
 CLAUDE_STATUS = os.path.join(SCRIPTS_DIR, "tmux-claude-status")
+AGENT_STATUS = os.path.join(SCRIPTS_DIR, "tmux-agent-status")
 DOCKERFILE = os.path.join(REPO_ROOT, "server", "Dockerfile")
 RENDER_PY = os.path.join(REPO_ROOT, "server", "tmux_status_server", "render.py")
 
@@ -38,7 +39,7 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
     """Verify tmux-claude-status case pattern uses session_key_expired not bare expired."""
 
     def setUp(self):
-        with open(CLAUDE_STATUS) as f:
+        with open(AGENT_STATUS) as f:
             self.content = f.read()
         self.lines = self.content.splitlines()
 
@@ -47,11 +48,11 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
         # Find the case pattern near QUOTA_STATUS
         found = False
         for line in self.lines:
-            if "session_key_expired" in line and "QUOTA_COLOR" in line:
+            if "session_key_expired" in line:
                 found = True
                 break
         self.assertTrue(found,
-                        "Case pattern must include session_key_expired for QUOTA_COLOR")
+                        "Case pattern must include session_key_expired")
 
     def test_case_pattern_no_bare_expired_as_standalone(self):
         """Case pattern does not have bare 'expired' as a standalone alternative.
@@ -60,7 +61,7 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
         'key_expired', but NOT as a standalone '|expired|' or '|expired)' pattern.
         """
         for line in self.lines:
-            if "QUOTA_COLOR" in line and "case" not in line.lower():
+            if "session_key_expired" in line and "case" not in line.lower():
                 # This is the pattern line like:
                 # session_key_expired|blocked|error|rate_limited|key_expired)
                 alternatives = re.findall(r'(\w+)', line)
@@ -76,7 +77,7 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
         expected = {"session_key_expired", "blocked", "error", "rate_limited", "key_expired"}
         found_line = None
         for line in self.lines:
-            if "session_key_expired" in line and "QUOTA_COLOR" in line:
+            if "session_key_expired" in line:
                 found_line = line
                 break
         self.assertIsNotNone(found_line, "Could not find case pattern line")
@@ -86,12 +87,8 @@ class TestTS31StatusCodeCasePattern(unittest.TestCase):
 
     def test_case_pattern_sets_red_color(self):
         """Error statuses set QUOTA_COLOR to colour196 (red)."""
-        for line in self.lines:
-            if "session_key_expired" in line and "QUOTA_COLOR" in line:
-                self.assertIn("colour196", line,
-                              "Error statuses should set colour196 (red)")
-                return
-        self.fail("Could not find session_key_expired case pattern")
+        self.assertIn('C_QUOTA_1="colour196"', self.content)
+        self.assertIn('C_QUOTA_2="colour196"', self.content)
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +276,14 @@ class TestTS35LegacyScriptRemoval(unittest.TestCase):
                          "SCRIPTS array must not include tmux-status-quota-poll")
 
     def test_install_sh_scripts_array_has_expected_scripts(self):
-        """install.sh SCRIPTS array contains exactly the 7 expected scripts."""
+        """install.sh SCRIPTS array contains both agent reader names."""
         with open(INSTALL_SH) as f:
             content = f.read()
         match = re.search(r'SCRIPTS=\(([^)]+)\)', content)
         self.assertIsNotNone(match)
         scripts = match.group(1).split()
         expected = {
+            "tmux-agent-status",
             "tmux-claude-status",
             "tmux-git-status",
             "tmux-status-poke",
@@ -371,6 +369,15 @@ class TestScriptSyntaxValidation(unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          f"bash -n failed: {result.stderr}")
 
+    def test_tmux_agent_status_is_valid_bash(self):
+        """tmux-agent-status passes bash -n syntax check."""
+        import subprocess
+        result = subprocess.run(
+            ["bash", "-n", AGENT_STATUS], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0,
+                         f"bash -n failed: {result.stderr}")
+
     def test_install_sh_is_valid_bash(self):
         """install.sh passes bash -n syntax check."""
         import subprocess
@@ -395,6 +402,7 @@ class TestScriptSyntaxValidation(unittest.TestCase):
         """All bash scripts in scripts/ pass bash -n."""
         import subprocess
         bash_scripts = [
+            "tmux-agent-status",
             "tmux-claude-status",
             "tmux-git-status",
             "tmux-status-apply-config",
@@ -419,7 +427,7 @@ class TestRendererQuotaStatusConsistency(unittest.TestCase):
     """Verify the renderer's case pattern is consistent with server error statuses."""
 
     def setUp(self):
-        with open(CLAUDE_STATUS) as f:
+        with open(AGENT_STATUS) as f:
             self.content = f.read()
 
     def test_renderer_case_pattern_matches_design_spec(self):
@@ -438,7 +446,7 @@ class TestRendererQuotaStatusConsistency(unittest.TestCase):
             "key_expired",
         }
         for line in self.content.splitlines():
-            if "session_key_expired" in line and "QUOTA_COLOR" in line:
+            if "session_key_expired" in line:
                 for status in error_statuses_requiring_red:
                     self.assertIn(status, line,
                                   f"Missing {status} in renderer error case pattern")
@@ -446,15 +454,21 @@ class TestRendererQuotaStatusConsistency(unittest.TestCase):
         self.fail("Could not find error status case pattern in renderer")
 
     def test_no_key_and_none_handled_separately(self):
-        """no_key and none statuses are handled by the omit-quota-section branch."""
-        # These statuses cause the quota section to be hidden entirely
-        # rather than displayed in red
-        for line in self.content.splitlines():
-            if "no_key" in line and "none" in line:
-                self.assertIn("QUOTA_STATUS", line,
-                              "no_key/none check should reference QUOTA_STATUS")
-                return
-        self.fail("Could not find no_key/none handling in renderer")
+        """Absent normalized quota slots are omitted by the reader."""
+        self.assertIn('[ -n "$duration" ] && [ -n "$reset" ]', self.content)
+
+
+class TestCodexAgentReaderContract(unittest.TestCase):
+    def test_legacy_reader_sources_primary_reader(self):
+        with open(CLAUDE_STATUS) as f:
+            content = f.read()
+        self.assertIn("tmux-agent-status", content)
+
+    def test_primary_reader_is_cache_only(self):
+        with open(AGENT_STATUS) as f:
+            content = f.read()
+        for forbidden in ("lsof ", "ps ", "python", "curl ", "urllib", ".jsonl"):
+            self.assertNotIn(forbidden, content)
 
 
 if __name__ == "__main__":

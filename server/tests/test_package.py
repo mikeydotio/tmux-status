@@ -123,6 +123,9 @@ class TestPyprojectToml(unittest.TestCase):
         """pyproject.toml declares name = 'tmux-status-server'."""
         self.assertIn('name = "tmux-status-server"', self.content)
 
+    def test_dual_provider_description(self):
+        self.assertIn("Claude/Codex tmux status renderer", self.content)
+
     def test_requires_python(self):
         """pyproject.toml declares requires-python >= 3.10."""
         self.assertIn('requires-python = ">=3.10"', self.content)

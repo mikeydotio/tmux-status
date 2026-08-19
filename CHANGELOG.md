@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- Add first-class Codex model, effort, context, quota, and window-name support
+  through exact local rollout discovery.
+- Add the provider-neutral `tmux-agent-status` reader while retaining
+  `tmux-claude-status` as a compatibility alias.
+
+### Changed
+- Normalize the render cache for Claude Code and Codex without adding work to
+  the fork-free tmux reader path.
+
 ## [v2.5.3] - 2026-07-05
 
 ### Documentation

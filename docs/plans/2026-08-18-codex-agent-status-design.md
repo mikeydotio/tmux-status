@@ -36,8 +36,9 @@ installations and already-loaded tmux configurations.
 
 ## Codex Data Mapping
 
-The parser scans the bounded rollout tail in reverse and independently keeps
-the newest valid `turn_context`, `task_started`, and `token_count` records.
+The parser scans the rollout tail in reverse, growing the tail window only when
+needed, and independently keeps the newest valid `turn_context`, `task_started`,
+and `token_count` records.
 Malformed, truncated, non-object, or partially populated records are ignored.
 
 - `turn_context.payload.model` and `.effort` supply model and reasoning effort.

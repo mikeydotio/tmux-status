@@ -1,16 +1,14 @@
 """tmux-status render daemon.
 
-Precomputes the per-pane status-bar data (Claude model/effort/context/quota/cost
-and git/path) on its own cadence and writes one small shell-sourceable cache file
-per pane. The tmux ``#()`` status scripts then become fork-free readers that just
-``source`` the cache and ``printf`` — moving ALL heavy work (process-tree walks,
-transcript parsing, quota HTTP, cost ``os.walk``, git subprocesses) off the tmux
-render path so it can never pile up.
+Precomputes per-pane Claude Code or Codex model/effort/context/quota plus
+git/path on its own cadence and writes one small shell-sourceable cache file per
+pane. The tmux ``#()`` status scripts are cache-only readers that just ``source``
+and ``printf`` — moving all process walks, transcript/rollout parsing, Claude
+quota HTTP, and git subprocesses off the tmux render path.
 
-The cache contract is the exact ``KEY=value`` set the old ``tmux-claude-status``
-heredoc emitted for ``eval`` (model, quota, cost), plus ``GIT_LINE`` and
-``RENDER_TS``. Because the readers keep the original bash formatting unchanged,
-status-bar output stays byte-for-byte identical.
+The cache contract uses provider-neutral ``AGENT_*`` fields plus the independent
+``GIT_LINE`` and ``RENDER_TS``. Claude rendering remains compatible while Codex
+adds local rollout-derived metrics without hooks or API calls.
 
 Design mirrors ``server.py``: a single managed instance (launchd ``KeepAlive`` /
 systemd ``Restart``) plus an advisory flock singleton guard, SIGTERM/SIGINT clean
@@ -178,6 +176,10 @@ def select_agent_process(pane_pid, claude_sessions, processes):
     candidates = []
     for session in claude_sessions:
         pid = session.get("pid")
+        # A stale Claude session file can survive PID reuse. If that PID now
+        # names the Codex executable, its live process identity takes precedence.
+        if _is_codex_command(processes.get(pid, {}).get("command")):
+            continue
         distance = _distance_to_ancestor(pid, pane_pid, ps_map)
         if distance is None:
             continue
@@ -373,32 +375,41 @@ def parse_codex_rollout(rollout, now=None):
     """Parse the latest Codex turn/context/quota metrics from a rollout tail."""
     status = _empty_agent_status("codex")
     try:
-        data = _read_tail_text(rollout)
+        file_size = os.path.getsize(rollout)
     except Exception:
         return status
 
     turn_context = None
     task_started = None
     token_count = None
-    for line in reversed(data.splitlines()):
+    scan_bytes = min(file_size, TRANSCRIPT_TAIL_BYTES)
+    while True:
         try:
-            record = json.loads(line)
+            data = _read_tail_text(rollout, max_bytes=scan_bytes)
         except Exception:
-            continue
-        if not isinstance(record, dict):
-            continue
-        payload = record.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        if turn_context is None and record.get("type") == "turn_context":
-            turn_context = payload
-        elif record.get("type") == "event_msg":
-            if task_started is None and payload.get("type") == "task_started":
-                task_started = payload
-            elif token_count is None and payload.get("type") == "token_count":
-                token_count = payload
+            return status
+        for line in reversed(data.splitlines()):
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if turn_context is None and record.get("type") == "turn_context":
+                turn_context = payload
+            elif record.get("type") == "event_msg":
+                if task_started is None and payload.get("type") == "task_started":
+                    task_started = payload
+                elif token_count is None and payload.get("type") == "token_count":
+                    token_count = payload
         if turn_context is not None and task_started is not None and token_count is not None:
             break
+        if scan_bytes >= file_size:
+            break
+        scan_bytes = min(file_size, max(1, scan_bytes * 2))
 
     if turn_context is not None:
         model = turn_context.get("model")

@@ -126,6 +126,15 @@ class TestAgentProcessSelection(unittest.TestCase):
         }
         self.assertIsNone(render.select_agent_process(10, [], processes))
 
+    def test_codex_command_wins_over_stale_claude_pid_reuse(self):
+        processes = {
+            10: self._process(10, 1, "zsh", 1),
+            30: self._process(30, 10, "codex", 3),
+        }
+        stale_sessions = [{"pid": 30, "cwd": "/old", "session_id": "old"}]
+        selected = render.select_agent_process(10, stale_sessions, processes)
+        self.assertEqual(selected["provider"], "codex")
+
 
 class TestCodexRolloutResolution(unittest.TestCase):
     def setUp(self):
@@ -264,6 +273,16 @@ class TestCodexRolloutParsing(unittest.TestCase):
         )
         status = render.parse_codex_rollout(self.rollout, now=self.now)
         self.assertEqual(status["model"], "gpt-5.6-sol")
+        self.assertEqual(status["context_pct"], 20)
+
+    def test_scan_grows_past_large_turn_body_for_latest_context_records(self):
+        large_body = {"type": "noise", "payload": {"text": "x" * 600000}}
+        self._write_records(
+            self._turn(), self._started(100), large_body, self._tokens(20),
+        )
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["model"], "gpt-5.6-sol")
+        self.assertEqual(status["effort"], "xhigh")
         self.assertEqual(status["context_pct"], 20)
 
     def test_context_is_clamped_to_one_hundred(self):

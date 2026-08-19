@@ -19,7 +19,7 @@ COMMENT_MARKER_LEGACY="tmux-status: 3-line status bar"
 
 # Scripts that were symlinked (incl. legacy names + tmux_claude_model.py, which
 # older versions symlinked but the render-daemon refactor no longer installs)
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-prune-clients tmux-status-context-hook.js tmux_claude_model.py tmux-status-quota-fetch tmux-status-quota-poll)
+SCRIPTS=(tmux-agent-status tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-prune-clients tmux-status-context-hook.js tmux_claude_model.py tmux-status-quota-fetch tmux-status-quota-poll)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 
 # ── Helpers ────────────────────────────────────────────────────
