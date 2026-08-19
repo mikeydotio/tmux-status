@@ -22,6 +22,7 @@ import glob
 import json
 import logging
 import os
+import platform
 import re
 import shlex
 import signal
@@ -70,16 +71,50 @@ def _parse_ps_output(text):
     return ps_map
 
 
-def build_ps_map():
-    """One process-table snapshot per tick (replaces the per-pane ``ps`` loop)."""
+def _parse_process_output(text):
+    """Parse ``ps`` rows into PID-keyed process metadata.
+
+    Expected columns are ``pid ppid lstart comm``. ``lstart`` is five fields on
+    both BSD/macOS and procps/Linux, leaving the command at field eight. A bad
+    row is ignored so a single disappearing process cannot abort a render tick.
+    """
+    processes = {}
+    for line in text.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) != 8:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            started = datetime.strptime(
+                " ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"
+            ).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            continue
+        processes[pid] = {
+            "pid": pid,
+            "ppid": ppid,
+            "started_at": started,
+            "command": parts[7],
+        }
+    return processes
+
+
+def build_process_snapshot():
+    """Take the one process-table snapshot used by an entire render tick."""
     try:
         out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
+            ["ps", "-axo", "pid=,ppid=,lstart=,comm="],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
         return {}
-    return _parse_ps_output(out.stdout)
+    return _parse_process_output(out.stdout)
+
+
+def build_ps_map():
+    """Compatibility helper returning only PID→PPID from a fresh snapshot."""
+    return {pid: process["ppid"] for pid, process in build_process_snapshot().items()}
 
 
 def walk_to_ancestor(pid, ancestor, ps_map, max_depth=64):
@@ -104,6 +139,160 @@ def walk_to_ancestor(pid, ancestor, ps_map, max_depth=64):
             return False
         cur = nxt
     return False
+
+
+def _distance_to_ancestor(pid, ancestor, ps_map, max_depth=64):
+    """Return descendant distance to ``ancestor``, or ``None`` without a match."""
+    try:
+        cur = int(pid)
+        ancestor = int(ancestor)
+    except (TypeError, ValueError):
+        return None
+    for distance in range(max_depth + 1):
+        if cur == ancestor:
+            return distance
+        if not cur or cur in (0, 1):
+            return None
+        cur = ps_map.get(cur)
+        if cur is None:
+            return None
+    return None
+
+
+def _is_codex_command(command):
+    """True only for known Codex executable names, never arbitrary arguments."""
+    name = os.path.basename(str(command or "")).lower()
+    return name == "codex" or name.startswith("codex-")
+
+
+def select_agent_process(pane_pid, claude_sessions, processes):
+    """Select the active agent descendant for a pane.
+
+    The closest descendant to the pane process wins. Equal-depth candidates are
+    ordered by process start time (newest first), then PID for determinism.
+    Claude candidates come from its authoritative live session files; Codex
+    candidates come from exact executable names in the shared process snapshot.
+    """
+    ps_map = {pid: process.get("ppid") for pid, process in processes.items()}
+    candidates = []
+    for session in claude_sessions:
+        pid = session.get("pid")
+        distance = _distance_to_ancestor(pid, pane_pid, ps_map)
+        if distance is None:
+            continue
+        process = processes.get(pid, {})
+        candidates.append({
+            "provider": "claude",
+            "pid": pid,
+            "distance": distance,
+            "started_at": process.get("started_at", 0),
+            "session": session,
+        })
+    for pid, process in processes.items():
+        if not _is_codex_command(process.get("command")):
+            continue
+        distance = _distance_to_ancestor(pid, pane_pid, ps_map)
+        if distance is None:
+            continue
+        candidates.append({
+            "provider": "codex",
+            "pid": pid,
+            "distance": distance,
+            "started_at": process.get("started_at", 0),
+        })
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda candidate: (
+            candidate["distance"],
+            -float(candidate.get("started_at") or 0),
+            -int(candidate["pid"]),
+        ),
+    )
+
+
+def _valid_rollout_path(path, codex_home):
+    """Return a canonical Codex rollout path, or ``None`` when out of scope."""
+    if not path or not str(path).endswith(".jsonl"):
+        return None
+    try:
+        candidate = os.path.realpath(path)
+        sessions_root = os.path.realpath(os.path.join(codex_home, "sessions"))
+        if os.path.commonpath((candidate, sessions_root)) != sessions_root:
+            return None
+        if not os.path.isfile(candidate):
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _single_rollout(paths, codex_home):
+    valid = {
+        resolved for path in paths
+        if (resolved := _valid_rollout_path(path, codex_home)) is not None
+    }
+    return next(iter(valid)) if len(valid) == 1 else None
+
+
+def _parse_lsof_rollouts(text, requested_pids, codex_home):
+    paths_by_pid = {int(pid): [] for pid in requested_pids}
+    current_pid = None
+    for line in text.splitlines():
+        if line.startswith("p"):
+            try:
+                current_pid = int(line[1:])
+            except ValueError:
+                current_pid = None
+        elif line.startswith("n") and current_pid in paths_by_pid:
+            paths_by_pid[current_pid].append(line[1:])
+    return {
+        pid: rollout
+        for pid, paths in paths_by_pid.items()
+        if (rollout := _single_rollout(paths, codex_home)) is not None
+    }
+
+
+def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"):
+    """Resolve exact open Codex rollout files for a batch of process IDs.
+
+    Linux reads descriptor symlinks directly. macOS performs one `lsof` call for
+    the full PID batch. A PID is returned only when exactly one unique rollout
+    under ``CODEX_HOME/sessions`` is open; ambiguity intentionally fails safe.
+    """
+    requested = sorted({int(pid) for pid in pids})
+    if not requested:
+        return {}
+    system_name = system_name or platform.system()
+    if system_name == "Linux":
+        resolved = {}
+        for pid in requested:
+            fd_dir = os.path.join(proc_root, str(pid), "fd")
+            paths = []
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    paths.append(os.readlink(os.path.join(fd_dir, fd)))
+                except OSError:
+                    continue
+            rollout = _single_rollout(paths, codex_home)
+            if rollout is not None:
+                resolved[pid] = rollout
+        return resolved
+    if system_name == "Darwin":
+        try:
+            out = subprocess.run(
+                ["lsof", "-n", "-F", "pn", "-p", ",".join(map(str, requested))],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return {}
+        return _parse_lsof_rollouts(out.stdout, requested, codex_home)
+    return {}
 
 
 # ── Claude session discovery ───────────────────────────────────────────────

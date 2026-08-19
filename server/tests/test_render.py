@@ -10,6 +10,7 @@ git-line port, and the cache writer/pruner. Network and tmux are never touched
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -44,6 +45,21 @@ class TestParsePsOutput(unittest.TestCase):
         self.assertEqual(render._parse_ps_output(""), {})
 
 
+class TestProcessSnapshot(unittest.TestCase):
+    def test_parses_parent_start_and_command(self):
+        text = (
+            "  100 1 Tue Aug 18 20:00:00 2026 /bin/zsh\n"
+            "  200 100 Tue Aug 18 20:01:02 2026 /opt/homebrew/bin/codex\n"
+        )
+        processes = render._parse_process_output(text)
+        self.assertEqual(processes[200]["ppid"], 100)
+        self.assertEqual(processes[200]["command"], "/opt/homebrew/bin/codex")
+        self.assertGreater(processes[200]["started_at"], processes[100]["started_at"])
+
+    def test_skips_malformed_rows(self):
+        self.assertEqual(render._parse_process_output("not a process row\n"), {})
+
+
 class TestWalkToAncestor(unittest.TestCase):
     def setUp(self):
         self.m = {300: 200, 200: 100, 100: 1}
@@ -73,6 +89,114 @@ class TestWalkToAncestor(unittest.TestCase):
     def test_non_integer_inputs(self):
         self.assertFalse(render.walk_to_ancestor(None, 1, self.m))
         self.assertFalse(render.walk_to_ancestor("x", 1, self.m))
+
+
+class TestAgentProcessSelection(unittest.TestCase):
+    @staticmethod
+    def _process(pid, ppid, command, started_at):
+        return {"pid": pid, "ppid": ppid, "command": command,
+                "started_at": started_at}
+
+    def test_nearest_descendant_wins_across_providers(self):
+        processes = {
+            10: self._process(10, 1, "zsh", 1),
+            20: self._process(20, 10, "claude", 2),
+            30: self._process(30, 20, "codex", 3),
+        }
+        sessions = [{"pid": 20, "cwd": "/work", "session_id": "c1"}]
+        selected = render.select_agent_process(10, sessions, processes)
+        self.assertEqual(selected["provider"], "claude")
+        self.assertEqual(selected["pid"], 20)
+
+    def test_newest_start_breaks_equal_depth_tie(self):
+        processes = {
+            10: self._process(10, 1, "zsh", 1),
+            20: self._process(20, 10, "claude", 2),
+            30: self._process(30, 10, "/usr/local/bin/codex", 3),
+        }
+        sessions = [{"pid": 20, "cwd": "/work", "session_id": "c1"}]
+        selected = render.select_agent_process(10, sessions, processes)
+        self.assertEqual(selected["provider"], "codex")
+        self.assertEqual(selected["pid"], 30)
+
+    def test_ignores_non_agent_commands(self):
+        processes = {
+            10: self._process(10, 1, "zsh", 1),
+            30: self._process(30, 10, "my-codex-report", 3),
+        }
+        self.assertIsNone(render.select_agent_process(10, [], processes))
+
+
+class TestCodexRolloutResolution(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.codex_home = os.path.join(self.tmp, ".codex")
+        self.sessions = os.path.join(self.codex_home, "sessions", "2026", "08", "18")
+        os.makedirs(self.sessions)
+
+    def _rollout(self, name):
+        path = os.path.join(self.sessions, name)
+        _write(path, "{}\n")
+        return path
+
+    def test_linux_resolves_one_exact_open_rollout(self):
+        rollout = self._rollout("rollout-one.jsonl")
+        proc_root = os.path.join(self.tmp, "proc")
+        fd_dir = os.path.join(proc_root, "123", "fd")
+        os.makedirs(fd_dir)
+        os.symlink(rollout, os.path.join(fd_dir, "7"))
+        resolved = render.resolve_codex_rollouts(
+            [123], self.codex_home, system_name="Linux", proc_root=proc_root,
+        )
+        self.assertEqual(resolved, {123: os.path.realpath(rollout)})
+
+    def test_linux_ambiguous_open_rollouts_fail_safe(self):
+        one = self._rollout("rollout-one.jsonl")
+        two = self._rollout("rollout-two.jsonl")
+        proc_root = os.path.join(self.tmp, "proc")
+        fd_dir = os.path.join(proc_root, "123", "fd")
+        os.makedirs(fd_dir)
+        os.symlink(one, os.path.join(fd_dir, "7"))
+        os.symlink(two, os.path.join(fd_dir, "8"))
+        resolved = render.resolve_codex_rollouts(
+            [123], self.codex_home, system_name="Linux", proc_root=proc_root,
+        )
+        self.assertEqual(resolved, {})
+
+    def test_linux_does_not_accept_jsonl_outside_codex_sessions(self):
+        outside = os.path.join(self.tmp, "other.jsonl")
+        _write(outside, "{}\n")
+        proc_root = os.path.join(self.tmp, "proc")
+        fd_dir = os.path.join(proc_root, "123", "fd")
+        os.makedirs(fd_dir)
+        os.symlink(outside, os.path.join(fd_dir, "7"))
+        resolved = render.resolve_codex_rollouts(
+            [123], self.codex_home, system_name="Linux", proc_root=proc_root,
+        )
+        self.assertEqual(resolved, {})
+
+    def test_macos_uses_one_batched_lsof_snapshot(self):
+        one = self._rollout("rollout-one.jsonl")
+        two = self._rollout("rollout-two.jsonl")
+        output = f"p123\nn{one}\np456\nn{two}\n"
+        completed = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+        with mock.patch.object(render.subprocess, "run", return_value=completed) as run:
+            resolved = render.resolve_codex_rollouts(
+                [123, 456], self.codex_home, system_name="Darwin",
+            )
+        self.assertEqual(resolved, {
+            123: os.path.realpath(one), 456: os.path.realpath(two),
+        })
+        run.assert_called_once()
+        self.assertIn("123,456", run.call_args.args[0])
+
+    def test_macos_missing_identity_fails_safe(self):
+        completed = subprocess.CompletedProcess([], 1, stdout="p123\n", stderr="")
+        with mock.patch.object(render.subprocess, "run", return_value=completed):
+            resolved = render.resolve_codex_rollouts(
+                [123], self.codex_home, system_name="Darwin",
+            )
+        self.assertEqual(resolved, {})
 
 
 # ── Session discovery ──────────────────────────────────────────────────────
