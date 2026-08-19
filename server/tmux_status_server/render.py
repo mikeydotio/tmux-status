@@ -21,6 +21,7 @@ import argparse
 import glob
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -295,6 +296,144 @@ def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"
     return {}
 
 
+# ── Codex rollout parsing ─────────────────────────────────────────────────
+def _empty_agent_status(provider):
+    return {
+        "provider": provider,
+        "model": None,
+        "effort": None,
+        "has_thinking": None,
+        "context_pct": None,
+        "quota_slots": [],
+        "quota_status": "none",
+        "quota_warn": False,
+    }
+
+
+def _read_tail_text(path, max_bytes=TRANSCRIPT_TAIL_BYTES):
+    """Read a bounded file tail, tolerating a partial first UTF-8/JSONL record."""
+    with open(path, "rb") as source:
+        source.seek(0, 2)
+        size = source.tell()
+        chunk_size = min(size, max_bytes)
+        source.seek(size - chunk_size)
+        return source.read().decode("utf-8", errors="replace")
+
+
+def _rounded_percent(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0, min(100, int(round(value))))
+
+
+def format_window_duration(window_minutes):
+    """Format a Codex quota window as a stable compact duration label."""
+    if isinstance(window_minutes, bool) or not isinstance(window_minutes, (int, float)):
+        return None
+    if not math.isfinite(window_minutes) or window_minutes <= 0:
+        return None
+    minutes = int(window_minutes)
+    if minutes != window_minutes:
+        return None
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
+def _format_reset_epoch(resets_at, now=None):
+    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
+        return None
+    if not math.isfinite(resets_at):
+        return None
+    now = time.time() if now is None else now
+    secs = max(0, int(resets_at - now))
+    if secs >= 86400:
+        return f"{secs / 86400:.1f}d"
+    if secs >= 3600:
+        return f"{secs / 3600:.1f}h"
+    return f"{secs // 60}m"
+
+
+def _codex_quota_slot(window, now=None):
+    if not isinstance(window, dict):
+        return None
+    duration = format_window_duration(window.get("window_minutes"))
+    pct = _rounded_percent(window.get("used_percent"))
+    reset = _format_reset_epoch(window.get("resets_at"), now=now)
+    if duration is None or pct is None or reset is None:
+        return None
+    return {"duration": duration, "reset": reset, "pct": pct}
+
+
+def parse_codex_rollout(rollout, now=None):
+    """Parse the latest Codex turn/context/quota metrics from a rollout tail."""
+    status = _empty_agent_status("codex")
+    try:
+        data = _read_tail_text(rollout)
+    except Exception:
+        return status
+
+    turn_context = None
+    task_started = None
+    token_count = None
+    for line in reversed(data.splitlines()):
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if turn_context is None and record.get("type") == "turn_context":
+            turn_context = payload
+        elif record.get("type") == "event_msg":
+            if task_started is None and payload.get("type") == "task_started":
+                task_started = payload
+            elif token_count is None and payload.get("type") == "token_count":
+                token_count = payload
+        if turn_context is not None and task_started is not None and token_count is not None:
+            break
+
+    if turn_context is not None:
+        model = turn_context.get("model")
+        effort = turn_context.get("effort")
+        status["model"] = model if isinstance(model, str) and model else None
+        status["effort"] = effort if isinstance(effort, str) and effort else None
+
+    context_window = task_started.get("model_context_window") if task_started else None
+    usage = token_count.get("info") if token_count else None
+    usage = usage.get("last_token_usage") if isinstance(usage, dict) else None
+    total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if (
+        isinstance(context_window, (int, float))
+        and not isinstance(context_window, bool)
+        and math.isfinite(context_window)
+        and context_window > 0
+        and isinstance(total_tokens, (int, float))
+        and not isinstance(total_tokens, bool)
+        and math.isfinite(total_tokens)
+    ):
+        status["context_pct"] = _rounded_percent(total_tokens / context_window * 100)
+
+    limits = token_count.get("rate_limits") if token_count else None
+    if isinstance(limits, dict):
+        for key in ("primary", "secondary"):
+            slot = _codex_quota_slot(limits.get(key), now=now)
+            if slot is not None:
+                status["quota_slots"].append(slot)
+        if status["quota_slots"]:
+            status["quota_status"] = (
+                "blocked" if limits.get("rate_limit_reached_type") else "ok"
+            )
+    return status
+
+
 # ── Claude session discovery ───────────────────────────────────────────────
 def load_sessions(claude_dir):
     """Read every ``~/.claude/sessions/*.json`` once, in-process.
@@ -488,8 +627,16 @@ def read_context_pct(conversation_id, home, default=0):
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
+def _expand_home_path(value, home):
+    if value == "~":
+        return home
+    if value.startswith("~/"):
+        return os.path.join(home, value[2:])
+    return value
+
+
 def load_settings(home):
-    """Read quota-related keys from ``~/.config/tmux-status/settings.conf``."""
+    """Read daemon settings from ``~/.config/tmux-status/settings.conf``."""
     config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config"))
     settings_file = os.path.join(config_dir, "tmux-status", "settings.conf")
     s = {
@@ -498,6 +645,7 @@ def load_settings(home):
         "quota_api_key": "",
         "quota_cache_ttl": 30,
         "quota_max_stale": 300,
+        "codex_home": os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"),
     }
     try:
         with open(settings_file) as sf:
@@ -526,6 +674,8 @@ def load_settings(home):
                         s["quota_max_stale"] = int(v)
                     except ValueError:
                         pass
+                elif k == "CODEX_HOME" and v:
+                    s["codex_home"] = _expand_home_path(v, home)
     except Exception:
         pass
     return s
@@ -753,22 +903,83 @@ def compute_git_line(path, home):
     return f"{rel} : {branch} ({status_str})"
 
 
-# ── Env assembly ───────────────────────────────────────────────────────────
-def claude_env_lines(model, effort, has_thinking, used_pct, quota_vars):
-    """Build the ``KEY=value`` lines the thin reader sources for the Claude line."""
-    return [
-        "MODEL=" + shlex.quote(model),
-        "SHORT_MODEL=" + shlex.quote(format_model(model)),
-        "USED_PCT=" + str(used_pct),
-        "EFFORT=" + shlex.quote(effort),
-        "HAS_THINKING=" + ("1" if has_thinking else "0"),
-        "QUOTA_STATUS=" + shlex.quote(quota_vars["quota_status"]),
-        "QUOTA_5H_PCT=" + shlex.quote(str(quota_vars["five_hour_pct"])),
-        "QUOTA_5H_REMAIN=" + shlex.quote(quota_vars["five_hour_remain"]),
-        "QUOTA_7D_PCT=" + shlex.quote(str(quota_vars["seven_day_pct"])),
-        "QUOTA_7D_REMAIN=" + shlex.quote(quota_vars["seven_day_remain"]),
-        "KEY_EXPIRY_WARN=" + ("1" if quota_vars["key_expiry_warn"] else "0"),
+# ── Provider adapters / env assembly ───────────────────────────────────────
+def build_claude_status(session, home, claude_dir):
+    """Adapt Claude's existing transcript+bridge precedence to a shared record."""
+    sid = session.get("session_id") or ""
+    transcript = find_transcript(session.get("cwd"), claude_dir, sid)
+    bridge = read_bridge(sid, home)
+    parsed = parse_transcript(transcript) if transcript else {
+        "model": "", "effort": "auto", "has_thinking": False,
+        "conversation_id": "",
+    }
+    model = parsed["model"] or bridge["model"]
+    if not model:
+        # Preserve Claude's historical blank-before-model behavior.
+        return None
+    status = _empty_agent_status("claude")
+    status.update({
+        "model": model,
+        "effort": bridge["effort"] or parsed["effort"],
+        "has_thinking": (
+            bridge["has_thinking"]
+            if bridge["has_thinking"] is not None
+            else parsed["has_thinking"]
+        ),
+        "context_pct": bridge["used_pct"],
+    })
+    return status
+
+
+def attach_claude_quota(status, quota_vars):
+    """Attach Claude's existing global quota values as normalized slots."""
+    status["quota_status"] = quota_vars["quota_status"]
+    status["quota_warn"] = quota_vars["key_expiry_warn"]
+    if quota_vars["quota_status"] not in ("none", "no_key"):
+        status["quota_slots"] = [
+            {
+                "duration": "5h",
+                "reset": quota_vars["five_hour_remain"],
+                "pct": quota_vars["five_hour_pct"],
+            },
+            {
+                "duration": "7d",
+                "reset": quota_vars["seven_day_remain"],
+                "pct": quota_vars["seven_day_pct"],
+            },
+        ]
+
+
+def _shell_value(value):
+    return shlex.quote("" if value is None else str(value))
+
+
+def agent_env_lines(status):
+    """Build the provider-neutral ``AGENT_*`` cache contract."""
+    thinking = status.get("has_thinking")
+    slots = list(status.get("quota_slots") or [])[:2]
+    while len(slots) < 2:
+        slots.append({})
+    lines = [
+        "AGENT_PROVIDER=" + _shell_value(status.get("provider")),
+        "AGENT_MODEL=" + _shell_value(status.get("model")),
+        "AGENT_SHORT_MODEL=" + _shell_value(format_model(status.get("model") or "")),
+        "AGENT_EFFORT=" + _shell_value(status.get("effort")),
+        "AGENT_HAS_THINKING=" + (
+            "''" if thinking is None else ("1" if thinking else "0")
+        ),
+        "AGENT_CONTEXT_PCT=" + _shell_value(status.get("context_pct")),
+        "AGENT_QUOTA_STATUS=" + _shell_value(status.get("quota_status") or "none"),
+        "AGENT_QUOTA_WARN=" + ("1" if status.get("quota_warn") else "0"),
     ]
+    for index, slot in enumerate(slots, start=1):
+        prefix = f"AGENT_QUOTA_{index}_"
+        lines.extend([
+            prefix + "DURATION=" + _shell_value(slot.get("duration")),
+            prefix + "RESET=" + _shell_value(slot.get("reset")),
+            prefix + "PCT=" + _shell_value(slot.get("pct")),
+        ])
+    return lines
 
 
 # ── Panes / cache ──────────────────────────────────────────────────────────
@@ -836,55 +1047,50 @@ def render_once(home=None, owner_pid=None):
         return 0
 
     os.makedirs(render_dir, exist_ok=True)
-    ps_map = build_ps_map()
+    settings = load_settings(home)
+    processes = build_process_snapshot()
     sessions = load_sessions(claude_dir)
 
-    # Pass 1 — resolve each pane to its Claude session ONCE: the live session
-    # file keys the exact transcript (model/effort) and the context bridge
-    # (used_pct + model + live effort). The model is the transcript's once an
-    # assistant reply exists, else the bridge's — so a fresh or /clear'd session
-    # (whose new transcript has no assistant message yet) still renders instead of
-    # going blank. Only fetch global quota if at least one pane resolves a model
-    # (matches the old script, which never touched quota for non-Claude panes).
-    # parse_transcript runs here and is reused in pass 2 — never twice.
-    _EMPTY_PARSED = {"model": "", "effort": "auto", "has_thinking": False, "conversation_id": ""}
-    resolved = []
-    any_claude = False
+    # Pass 1 — select one provider process per pane from the shared snapshot.
+    # Resolve every selected Codex PID in one platform operation (one batched
+    # lsof on macOS; direct fd reads on Linux), never by guessing a recent file.
+    selected = []
     for pane in panes:
-        session = resolve_pane_session(pane["pid"], sessions, ps_map)
-        sid = session.get("session_id") or "" if session else ""
-        transcript = find_transcript(session["cwd"], claude_dir, sid) if session else None
-        bridge = read_bridge(sid, home)
-        parsed = parse_transcript(transcript) if transcript else _EMPTY_PARSED
-        model = parsed["model"] or bridge["model"]
-        if model:
-            any_claude = True
-        resolved.append((pane, transcript, parsed, bridge, model))
+        selected.append((pane, select_agent_process(pane["pid"], sessions, processes)))
+    codex_rollouts = resolve_codex_rollouts(
+        [agent["pid"] for _, agent in selected if agent and agent["provider"] == "codex"],
+        settings["codex_home"],
+    )
 
-    quota_vars = None
-    if any_claude:
-        settings = load_settings(home)
+    # Pass 2 — adapt the provider's exact local source into one status record.
+    resolved = []
+    claude_statuses = []
+    for pane, agent in selected:
+        status = None
+        if agent and agent["provider"] == "claude":
+            status = build_claude_status(agent["session"], home, claude_dir)
+            if status is not None:
+                claude_statuses.append(status)
+        elif agent and agent["provider"] == "codex":
+            rollout = codex_rollouts.get(agent["pid"])
+            if rollout:
+                status = parse_codex_rollout(rollout)
+        resolved.append((pane, status))
+
+    # Claude quota remains global and uses only the existing Claude quota server.
+    # Codex quota is already local to each rollout and never traverses that path.
+    if claude_statuses:
         quota_vars = compute_quota_vars(settings, home)
+        for status in claude_statuses:
+            attach_claude_quota(status, quota_vars)
 
-    # Pass 2 — pure assembly + write (no re-resolution, no second transcript parse).
+    # Pass 3 — pure assembly + atomic write.
     live_pids = set()
-    for pane, transcript, parsed, bridge, model in resolved:
+    for pane, status in resolved:
         live_pids.add(pane["pid"])
         lines = []
-        if model and quota_vars is not None:
-            # Effort precedence: live statusLine hook (bridge) > transcript
-            # /effort echo > settings.json default > "auto". parse_transcript
-            # already folds the last three, so the bridge value simply wins when
-            # present. Same for the thinking toggle (None = bridge silent).
-            effort = bridge["effort"] or parsed["effort"]
-            has_thinking = (
-                bridge["has_thinking"]
-                if bridge["has_thinking"] is not None
-                else parsed["has_thinking"]
-            )
-            lines.extend(claude_env_lines(
-                model, effort, has_thinking, bridge["used_pct"], quota_vars,
-            ))
+        if status is not None:
+            lines.extend(agent_env_lines(status))
         lines.append("GIT_LINE=" + shlex.quote(compute_git_line(pane["path"], home)))
         lines.append("RENDER_TS=" + str(render_ts))
         try:

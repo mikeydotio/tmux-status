@@ -199,6 +199,117 @@ class TestCodexRolloutResolution(unittest.TestCase):
         self.assertEqual(resolved, {})
 
 
+class TestCodexRolloutParsing(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.rollout = os.path.join(self.tmp, "rollout.jsonl")
+        self.now = 1_000_000
+
+    @staticmethod
+    def _turn(model="gpt-5.6-sol", effort="xhigh", **extra):
+        payload = {"model": model, "effort": effort, **extra}
+        return {"type": "turn_context", "payload": payload}
+
+    @staticmethod
+    def _started(window, **extra):
+        payload = {"type": "task_started", "model_context_window": window, **extra}
+        return {"type": "event_msg", "payload": payload}
+
+    @staticmethod
+    def _tokens(total, primary=None, secondary=None, reached=None, **extra):
+        limits = {
+            "primary": primary,
+            "secondary": secondary,
+            "rate_limit_reached_type": reached,
+        }
+        payload = {
+            "type": "token_count",
+            "info": {"last_token_usage": {"total_tokens": total}},
+            "rate_limits": limits,
+            **extra,
+        }
+        return {"type": "event_msg", "payload": payload}
+
+    def _write_records(self, *records, prefix=""):
+        _write(self.rollout, prefix + "\n".join(json.dumps(r) for r in records) + "\n")
+
+    def test_extracts_latest_model_effort_context_and_two_quota_windows(self):
+        primary = {"window_minutes": 300, "used_percent": 41.6,
+                   "resets_at": self.now + 2400}
+        secondary = {"window_minutes": 10080, "used_percent": 64.2,
+                     "resets_at": self.now + 440640}
+        self._write_records(
+            self._turn("gpt-5.4", "medium"),
+            self._started(1000),
+            self._tokens(250),
+            self._turn(extra_field="ignored"),
+            self._started(2000, another="ignored"),
+            self._tokens(1001, primary, secondary, ignored=True),
+        )
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["provider"], "codex")
+        self.assertEqual(status["model"], "gpt-5.6-sol")
+        self.assertEqual(status["effort"], "xhigh")
+        self.assertEqual(status["context_pct"], 50)
+        self.assertEqual(status["quota_status"], "ok")
+        self.assertEqual(status["quota_slots"], [
+            {"duration": "5h", "reset": "40m", "pct": 42},
+            {"duration": "7d", "reset": "5.1d", "pct": 64},
+        ])
+
+    def test_malformed_and_truncated_lines_are_ignored(self):
+        self._write_records(
+            self._turn(), self._started(100), self._tokens(20),
+            prefix="{truncated json\n[]\n",
+        )
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["model"], "gpt-5.6-sol")
+        self.assertEqual(status["context_pct"], 20)
+
+    def test_context_is_clamped_to_one_hundred(self):
+        self._write_records(self._turn(), self._started(100), self._tokens(10000))
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["context_pct"], 100)
+
+    def test_negative_context_is_clamped_to_zero(self):
+        self._write_records(self._turn(), self._started(100), self._tokens(-10))
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["context_pct"], 0)
+
+    def test_partial_records_omit_only_missing_metrics(self):
+        incomplete = {"window_minutes": 300, "used_percent": 10}
+        self._write_records(
+            {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
+            self._tokens(10, primary=incomplete),
+        )
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["model"], "gpt-5.6-sol")
+        self.assertIsNone(status["effort"])
+        self.assertIsNone(status["context_pct"])
+        self.assertEqual(status["quota_slots"], [])
+
+    def test_one_quota_window_and_reached_limit(self):
+        primary = {"window_minutes": 300, "used_percent": 100,
+                   "resets_at": self.now + 60}
+        self._write_records(self._turn(), self._started(100),
+                            self._tokens(50, primary=primary, reached="primary"))
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+        self.assertEqual(status["quota_status"], "blocked")
+        self.assertEqual(status["quota_slots"], [
+            {"duration": "5h", "reset": "1m", "pct": 100},
+        ])
+
+    def test_missing_file_returns_empty_codex_record(self):
+        status = render.parse_codex_rollout(os.path.join(self.tmp, "missing.jsonl"))
+        self.assertEqual(status["provider"], "codex")
+        self.assertIsNone(status["model"])
+        self.assertEqual(status["quota_slots"], [])
+
+    def test_duration_labels(self):
+        self.assertEqual(render.format_window_duration(300), "5h")
+        self.assertEqual(render.format_window_duration(10080), "7d")
+        self.assertEqual(render.format_window_duration(90), "90m")
+
 # ── Session discovery ──────────────────────────────────────────────────────
 class TestLoadSessions(unittest.TestCase):
     def setUp(self):
@@ -429,6 +540,33 @@ class TestReadBridge(unittest.TestCase):
         self.assertIsNone(b["has_thinking"])
 
 
+class TestCodexHomeSettings(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _load(self, env_value=""):
+        with mock.patch.dict(os.environ, {"CODEX_HOME": env_value}, clear=False):
+            os.environ.pop("XDG_CONFIG_HOME", None)
+            return render.load_settings(self.tmp)
+
+    def test_configured_codex_home_wins_and_expands_tilde(self):
+        _write(
+            os.path.join(self.tmp, ".config", "tmux-status", "settings.conf"),
+            "CODEX_HOME=~/custom-codex\n",
+        )
+        settings = self._load(os.path.join(self.tmp, "env-codex"))
+        self.assertEqual(settings["codex_home"], os.path.join(self.tmp, "custom-codex"))
+
+    def test_environment_is_fallback(self):
+        env_home = os.path.join(self.tmp, "env-codex")
+        self.assertEqual(self._load(env_home)["codex_home"], env_home)
+
+    def test_default_is_dot_codex_under_home(self):
+        self.assertEqual(
+            self._load("")["codex_home"], os.path.join(self.tmp, ".codex"),
+        )
+
+
 # ── Quota ──────────────────────────────────────────────────────────────────
 class TestComputeQuotaVars(unittest.TestCase):
     def setUp(self):
@@ -473,31 +611,35 @@ class TestComputeQuotaVars(unittest.TestCase):
 
 
 # ── Env-line contract ──────────────────────────────────────────────────────
-class TestClaudeEnvLines(unittest.TestCase):
-    def setUp(self):
-        self.q = {"quota_status": "ok", "five_hour_pct": 6, "seven_day_pct": 64,
-                  "five_hour_remain": "40m", "seven_day_remain": "10.0h",
-                  "key_expiry_warn": False}
+class TestAgentEnvLines(unittest.TestCase):
+    def test_exact_normalized_claude_lines(self):
+        status = {
+            "provider": "claude", "model": "claude-opus-4-8", "effort": "high",
+            "has_thinking": True, "context_pct": 37, "quota_status": "ok",
+            "quota_warn": False,
+            "quota_slots": [
+                {"duration": "5h", "reset": "40m", "pct": 6},
+                {"duration": "7d", "reset": "10.0h", "pct": 64},
+            ],
+        }
+        lines = render.agent_env_lines(status)
+        self.assertEqual(lines[0], "AGENT_PROVIDER=claude")
+        self.assertEqual(lines[1], "AGENT_MODEL=claude-opus-4-8")
+        self.assertEqual(lines[2], "AGENT_SHORT_MODEL='Opus 4.8'")
+        self.assertEqual(lines[3], "AGENT_EFFORT=high")
+        self.assertEqual(lines[4], "AGENT_HAS_THINKING=1")
+        self.assertEqual(lines[5], "AGENT_CONTEXT_PCT=37")
+        self.assertIn("AGENT_QUOTA_1_DURATION=5h", lines)
+        self.assertIn("AGENT_QUOTA_2_RESET=10.0h", lines)
+        self.assertFalse(any(ln.startswith("MODEL=") for ln in lines))
 
-    def test_exact_lines(self):
-        lines = render.claude_env_lines("claude-opus-4-8", "high", True, 37, self.q)
-        self.assertEqual(lines[0], "MODEL=claude-opus-4-8")
-        self.assertEqual(lines[1], "SHORT_MODEL='Opus 4.8'")  # space => shlex-quoted
-        self.assertEqual(lines[2], "USED_PCT=37")             # bare int
-        self.assertEqual(lines[3], "EFFORT=high")
-        self.assertEqual(lines[4], "HAS_THINKING=1")
-        # Cost keys are gone entirely (dollar display + computation removed).
-        self.assertFalse(any(ln.startswith("SESSION_COST=") for ln in lines))
-        self.assertFalse(any(ln.startswith("DAILY_COST=") for ln in lines))
-
-    def test_thinking_flag_zero(self):
-        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, self.q)
-        self.assertEqual(lines[4], "HAS_THINKING=0")
-
-    def test_quota_X_value_quoted(self):
-        q = dict(self.q, five_hour_pct="X")
-        lines = render.claude_env_lines("claude-opus-4-8", "auto", False, 0, q)
-        self.assertIn("QUOTA_5H_PCT=X", lines)
+    def test_missing_codex_metrics_are_empty(self):
+        status = render._empty_agent_status("codex")
+        lines = render.agent_env_lines(status)
+        self.assertIn("AGENT_MODEL=''", lines)
+        self.assertIn("AGENT_EFFORT=''", lines)
+        self.assertIn("AGENT_CONTEXT_PCT=''", lines)
+        self.assertIn("AGENT_QUOTA_1_DURATION=''", lines)
 
 
 # ── Git line ───────────────────────────────────────────────────────────────
@@ -543,7 +685,7 @@ class TestCacheAndRenderOnce(unittest.TestCase):
     def test_render_once_writes_pane_cache(self):
         panes = [{"pid": 4242, "path": "/var/empty"}]
         with mock.patch.object(render, "enumerate_panes", return_value=panes), \
-             mock.patch.object(render, "build_ps_map", return_value={}), \
+             mock.patch.object(render, "build_process_snapshot", return_value={}), \
              mock.patch.object(render, "load_sessions", return_value=[]):
             n = render.render_once(home=self.tmp)
         self.assertEqual(n, 1)
@@ -561,7 +703,10 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         # fallback can't read the real user's ~/.claude (keeps the test hermetic).
         with mock.patch.dict(os.environ, {"HOME": home}), \
              mock.patch.object(render, "enumerate_panes", return_value=panes), \
-             mock.patch.object(render, "build_ps_map", return_value=ps_map), \
+             mock.patch.object(render, "build_process_snapshot", return_value={
+                 pid: {"pid": pid, "ppid": ppid, "command": "", "started_at": pid}
+                 for pid, ppid in ps_map.items()
+             }), \
              mock.patch.object(render, "load_sessions", return_value=sessions):
             return render.render_once(home=home)
 
@@ -583,9 +728,10 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         )
         with open(os.path.join(self.render_dir, "pane-4242.env")) as f:
             content = f.read()
-        self.assertIn("MODEL=claude-opus-4-8", content)
-        self.assertIn("SHORT_MODEL='Opus 4.8'", content)
-        self.assertIn("USED_PCT=3", content)
+        self.assertIn("AGENT_PROVIDER=claude", content)
+        self.assertIn("AGENT_MODEL=claude-opus-4-8", content)
+        self.assertIn("AGENT_SHORT_MODEL='Opus 4.8'", content)
+        self.assertIn("AGENT_CONTEXT_PCT=3", content)
 
     def test_render_once_renders_from_bridge_when_transcript_absent(self):
         # Brand-new session: no transcript file yet. Bridge supplies the model so
@@ -601,7 +747,7 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         )
         with open(os.path.join(self.render_dir, "pane-4243.env")) as f:
             content = f.read()
-        self.assertIn("MODEL=claude-sonnet-4-6", content)
+        self.assertIn("AGENT_MODEL=claude-sonnet-4-6", content)
         self.assertNotIn("SESSION_COST", content)
         self.assertNotIn("DAILY_COST", content)
 
@@ -626,7 +772,53 @@ class TestCacheAndRenderOnce(unittest.TestCase):
         )
         with open(os.path.join(self.render_dir, "pane-4244.env")) as f:
             content = f.read()
-        self.assertIn("EFFORT=xhigh", content)
+        self.assertIn("AGENT_EFFORT=xhigh", content)
+
+    def test_render_once_writes_codex_status_from_exact_rollout(self):
+        home = self.tmp
+        rollout = os.path.join(home, ".codex", "sessions", "2026", "08", "18",
+                               "rollout-one.jsonl")
+        _write(rollout, "\n".join([
+            json.dumps({"type": "turn_context", "payload": {
+                "model": "gpt-5.6-sol", "effort": "xhigh"}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_started", "model_context_window": 100}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "token_count", "info": {"last_token_usage": {
+                    "total_tokens": 25}}, "rate_limits": {}}}),
+        ]) + "\n")
+        processes = {
+            4245: {"pid": 4245, "ppid": 1, "command": "zsh", "started_at": 1},
+            6000: {"pid": 6000, "ppid": 4245, "command": "codex", "started_at": 2},
+        }
+        with mock.patch.object(render, "enumerate_panes", return_value=[
+                 {"pid": 4245, "path": "/var/empty"}]), \
+             mock.patch.object(render, "build_process_snapshot", return_value=processes), \
+             mock.patch.object(render, "load_sessions", return_value=[]), \
+             mock.patch.object(render, "resolve_codex_rollouts", return_value={6000: rollout}):
+            render.render_once(home=home)
+        with open(os.path.join(self.render_dir, "pane-4245.env")) as f:
+            content = f.read()
+        self.assertIn("AGENT_PROVIDER=codex", content)
+        self.assertIn("AGENT_MODEL=gpt-5.6-sol", content)
+        self.assertIn("AGENT_EFFORT=xhigh", content)
+        self.assertIn("AGENT_CONTEXT_PCT=25", content)
+
+    def test_render_once_codex_without_exact_rollout_is_blank(self):
+        processes = {
+            4246: {"pid": 4246, "ppid": 1, "command": "zsh", "started_at": 1},
+            6001: {"pid": 6001, "ppid": 4246, "command": "codex", "started_at": 2},
+        }
+        with mock.patch.object(render, "enumerate_panes", return_value=[
+                 {"pid": 4246, "path": "/var/empty"}]), \
+             mock.patch.object(render, "build_process_snapshot", return_value=processes), \
+             mock.patch.object(render, "load_sessions", return_value=[]), \
+             mock.patch.object(render, "resolve_codex_rollouts", return_value={}):
+            render.render_once(home=self.tmp)
+        with open(os.path.join(self.render_dir, "pane-4246.env")) as f:
+            content = f.read()
+        self.assertNotIn("AGENT_PROVIDER=", content)
+        self.assertIn("GIT_LINE=", content)
 
 
 # ── PATH hardening (launchd/systemd minimal PATH) ──────────────────────────
