@@ -45,14 +45,18 @@ Malformed, truncated, non-object, or partially populated records are ignored.
 - `task_started.payload.model_context_window` supplies context capacity.
 - `token_count.payload.info.last_token_usage.total_tokens` supplies used
   context. The displayed percentage is rounded and clamped to 0–100.
-- `token_count.payload.rate_limits.primary` and `.secondary` become optional
-  quota slots. `window_minutes` becomes a compact duration (`5h`, `7d`),
-  `used_percent` is rounded and clamped, and Unix `resets_at` becomes the same
-  compact countdown style used elsewhere (`40m`, `3.2h`, `5.1d`).
+- The latest general `codex` rate-limit snapshot supplies optional `primary`
+  and `secondary` quota slots. Named model-specific limit streams cannot replace
+  that account quota, and the freshest general snapshot across exact active
+  rollouts is shared by Codex panes. `window_minutes` becomes a compact duration
+  (`5h`, `7d`), `used_percent` is rounded and clamped, and Unix `resets_at`
+  becomes the same compact countdown style used elsewhere (`40m`, `3.2h`,
+  `5.1d`).
 
 Missing model, effort, context, or quota data omits only that display segment.
-Codex quota is rendered as `<duration>/<countdown>: <bar> <percent>`. Claude's
-current model/effort/context/quota output remains unchanged.
+Codex quota is rendered as `<countdown>: <bar> <percent>`, matching Claude's
+remaining-time labels. Claude's current model/effort/context/quota output
+remains unchanged.
 
 ## Configuration and Compatibility
 

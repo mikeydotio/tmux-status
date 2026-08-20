@@ -33,10 +33,11 @@ transcript/settings fallbacks. Claude context comes from the bridge. Optional
 Claude quota comes from the dedicated local/remote Claude quota service.
 
 Codex reads backward from the tail of the exact open rollout, expanding the scan
-only until it finds the latest valid `turn_context`, `task_started`, and
-`token_count`. Those records
-supply model/effort, context capacity/usage, and up to two rate-limit windows.
-Malformed, truncated, partial, and additional fields cannot abort a tick.
+until it finds the latest valid `turn_context`, `task_started`, and `token_count`
+plus the latest general `codex` rate-limit snapshot. Named model-specific limit
+streams do not replace the general account quota. The freshest general snapshot
+across exact active rollouts is shared by Codex panes. Malformed, truncated,
+partial, and additional fields cannot abort a tick.
 
 Codex support is read-only and local: there are no Codex hooks, Codex config
 mutations, OpenAI API calls, or requests to the Claude quota service.

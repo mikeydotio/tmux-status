@@ -15,11 +15,10 @@ The status bar has three lines, rendered at the bottom of the terminal:
  ╰─ model ──╯ ╰effort╯    ╰context╯    ╰─5h quota─╯   ╰─7d quota─╯
 ```
 
-Codex uses the same layout and includes each quota window before its reset
-countdown:
+Codex uses the same layout and labels each quota window by its reset countdown:
 
 ```
- GPT-5.6 Sol (xhigh) │ Ctx: ▂ 21% │ 7d/5.1d: ▂ 14%
+ GPT-5.6 Sol (xhigh) │ Ctx: ▂ 21% │ 5.1d: ▂ 14%
 ```
 
 No provider badge is added; the model name identifies the active agent.
@@ -271,9 +270,10 @@ Line 0 of the status bar shows Claude Code session metadata. There are three dat
 
 Codex model and reasoning effort come from the latest `turn_context` in the
 active rollout. Context usage combines the latest `task_started` context-window
-size with the latest `token_count` total. The same token record supplies zero,
-one, or two local rate-limit windows, displayed as
-`<window>/<reset>: <bar> <percent>`.
+size with the latest `token_count` total. Quota comes from the general `codex`
+rate-limit stream, not a named model-specific limit; the freshest general
+snapshot across exact active rollouts is displayed by time remaining as
+`<reset>: <bar> <percent>`.
 
 To avoid showing a different session's data, the renderer only accepts the exact
 rollout JSONL held open by the selected Codex process: `/proc/<pid>/fd` on Linux,

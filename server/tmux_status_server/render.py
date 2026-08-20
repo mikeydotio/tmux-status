@@ -41,6 +41,11 @@ MAX_BACKOFF = 60
 RENDER_DIRNAME = "render"
 TRANSCRIPT_TAIL_BYTES = 512000
 
+# Exact rollout paths are append-only for a live Codex session. Cache the most
+# recent general-account quota snapshot so a newer model-specific token event
+# does not force a multi-megabyte backward scan on every render tick.
+_CODEX_GENERAL_QUOTA_CACHE = {}
+
 # launchd (macOS) and systemd (Linux) start daemons with a minimal PATH that
 # usually omits Homebrew/local bin dirs — so `tmux` and `git` would not resolve
 # and the daemon would see zero panes and render nothing. Make sure the common
@@ -371,17 +376,35 @@ def _codex_quota_slot(window, now=None):
     return {"duration": duration, "reset": reset, "pct": pct}
 
 
+def _record_epoch(record):
+    value = record.get("timestamp") if isinstance(record, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) else 0
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def parse_codex_rollout(rollout, now=None):
     """Parse the latest Codex turn/context/quota metrics from a rollout tail."""
     status = _empty_agent_status("codex")
     try:
-        file_size = os.path.getsize(rollout)
+        file_stat = os.stat(rollout)
+        file_size = file_stat.st_size
     except Exception:
         return status
+
+    cache_key = (os.path.realpath(rollout), file_stat.st_dev, file_stat.st_ino)
+    cached_general_quota = _CODEX_GENERAL_QUOTA_CACHE.get(cache_key)
 
     turn_context = None
     task_started = None
     token_count = None
+    quota_fallback = None
+    general_quota = None
     scan_bytes = min(file_size, TRANSCRIPT_TAIL_BYTES)
     while True:
         try:
@@ -403,9 +426,26 @@ def parse_codex_rollout(rollout, now=None):
             elif record.get("type") == "event_msg":
                 if task_started is None and payload.get("type") == "task_started":
                     task_started = payload
-                elif token_count is None and payload.get("type") == "token_count":
-                    token_count = payload
-        if turn_context is not None and task_started is not None and token_count is not None:
+                elif payload.get("type") == "token_count":
+                    if token_count is None:
+                        token_count = payload
+                    limits = payload.get("rate_limits")
+                    if isinstance(limits, dict):
+                        candidate = {
+                            "payload": payload,
+                            "limit_id": limits.get("limit_id"),
+                            "observed_at": _record_epoch(record),
+                        }
+                        if quota_fallback is None:
+                            quota_fallback = candidate
+                        if general_quota is None and limits.get("limit_id") == "codex":
+                            general_quota = candidate
+                        elif general_quota is None and not limits.get("limit_id"):
+                            # Codex releases before named limit streams exposed
+                            # the same general quota without a limit identifier.
+                            general_quota = candidate
+        quota_ready = general_quota is not None or cached_general_quota is not None
+        if turn_context is not None and task_started is not None and token_count is not None and quota_ready:
             break
         if scan_bytes >= file_size:
             break
@@ -432,7 +472,15 @@ def parse_codex_rollout(rollout, now=None):
     ):
         status["context_pct"] = _rounded_percent(total_tokens / context_window * 100)
 
-    limits = token_count.get("rate_limits") if token_count else None
+    if general_quota is not None:
+        _CODEX_GENERAL_QUOTA_CACHE[cache_key] = general_quota
+        cached_general_quota = general_quota
+        if len(_CODEX_GENERAL_QUOTA_CACHE) > 128:
+            _CODEX_GENERAL_QUOTA_CACHE.pop(next(iter(_CODEX_GENERAL_QUOTA_CACHE)))
+
+    quota_record = cached_general_quota or quota_fallback
+    quota_token_count = quota_record.get("payload") if quota_record else None
+    limits = quota_token_count.get("rate_limits") if quota_token_count else None
     if isinstance(limits, dict):
         for key in ("primary", "secondary"):
             slot = _codex_quota_slot(limits.get(key), now=now)
@@ -442,7 +490,26 @@ def parse_codex_rollout(rollout, now=None):
             status["quota_status"] = (
                 "blocked" if limits.get("rate_limit_reached_type") else "ok"
             )
+            status["_quota_limit_id"] = quota_record.get("limit_id")
+            status["_quota_observed_at"] = quota_record.get("observed_at", 0)
     return status
+
+
+def share_latest_codex_quota(statuses):
+    """Use the freshest general-account quota across exact live rollouts."""
+    general = [
+        status for status in statuses
+        if status.get("_quota_limit_id") == "codex" and status.get("quota_slots")
+    ]
+    if not general:
+        return
+    latest = max(general, key=lambda status: status.get("_quota_observed_at", 0))
+    for status in statuses:
+        status["quota_slots"] = [dict(slot) for slot in latest["quota_slots"]]
+        status["quota_status"] = latest.get("quota_status", "none")
+        status["quota_warn"] = latest.get("quota_warn", False)
+        status["_quota_limit_id"] = latest.get("_quota_limit_id")
+        status["_quota_observed_at"] = latest.get("_quota_observed_at", 0)
 
 
 # ── Claude session discovery ───────────────────────────────────────────────
@@ -1076,6 +1143,7 @@ def render_once(home=None, owner_pid=None):
     # Pass 2 — adapt the provider's exact local source into one status record.
     resolved = []
     claude_statuses = []
+    codex_statuses = []
     for pane, agent in selected:
         status = None
         if agent and agent["provider"] == "claude":
@@ -1086,6 +1154,7 @@ def render_once(home=None, owner_pid=None):
             rollout = codex_rollouts.get(agent["pid"])
             if rollout:
                 status = parse_codex_rollout(rollout)
+                codex_statuses.append(status)
         resolved.append((pane, status))
 
     # Claude quota remains global and uses only the existing Claude quota server.
@@ -1094,6 +1163,11 @@ def render_once(home=None, owner_pid=None):
         quota_vars = compute_quota_vars(settings, home)
         for status in claude_statuses:
             attach_claude_quota(status, quota_vars)
+
+    # The `codex` limit is account-wide. Different live rollouts can also emit
+    # named model-specific limits, so render the freshest general snapshot on
+    # every Codex pane rather than allowing an inactive 0% bucket to replace it.
+    share_latest_codex_quota(codex_statuses)
 
     # Pass 3 — pure assembly + atomic write.
     live_pids = set()

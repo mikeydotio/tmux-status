@@ -225,19 +225,27 @@ class TestCodexRolloutParsing(unittest.TestCase):
         return {"type": "event_msg", "payload": payload}
 
     @staticmethod
-    def _tokens(total, primary=None, secondary=None, reached=None, **extra):
+    def _tokens(total, primary=None, secondary=None, reached=None,
+                limit_id=None, limit_name=None, timestamp=None, **extra):
         limits = {
             "primary": primary,
             "secondary": secondary,
             "rate_limit_reached_type": reached,
         }
+        if limit_id is not None:
+            limits["limit_id"] = limit_id
+        if limit_name is not None:
+            limits["limit_name"] = limit_name
         payload = {
             "type": "token_count",
             "info": {"last_token_usage": {"total_tokens": total}},
             "rate_limits": limits,
             **extra,
         }
-        return {"type": "event_msg", "payload": payload}
+        record = {"type": "event_msg", "payload": payload}
+        if timestamp is not None:
+            record["timestamp"] = timestamp
+        return record
 
     def _write_records(self, *records, prefix=""):
         _write(self.rollout, prefix + "\n".join(json.dumps(r) for r in records) + "\n")
@@ -284,6 +292,62 @@ class TestCodexRolloutParsing(unittest.TestCase):
         self.assertEqual(status["model"], "gpt-5.6-sol")
         self.assertEqual(status["effort"], "xhigh")
         self.assertEqual(status["context_pct"], 20)
+
+    def test_general_quota_survives_newer_model_specific_zero_snapshot(self):
+        general = {"window_minutes": 10080, "used_percent": 6,
+                   "resets_at": self.now + 250560}
+        inactive_model_limit = {"window_minutes": 10080, "used_percent": 0,
+                                "resets_at": self.now + 604800}
+        large_body = {"type": "noise", "payload": {"text": "x" * 600000}}
+        self._write_records(
+            self._turn(),
+            self._started(1000),
+            self._tokens(250, primary=general, limit_id="codex",
+                         timestamp="2026-08-19T15:00:00Z"),
+            large_body,
+            self._tokens(600, primary=inactive_model_limit,
+                         limit_id="codex_bengalfox",
+                         limit_name="GPT-5.3-Codex-Spark",
+                         timestamp="2026-08-19T16:00:00Z"),
+        )
+
+        status = render.parse_codex_rollout(self.rollout, now=self.now)
+
+        self.assertEqual(status["context_pct"], 60)
+        self.assertEqual(status["quota_slots"], [
+            {"duration": "7d", "reset": "2.9d", "pct": 6},
+        ])
+        self.assertEqual(status["_quota_limit_id"], "codex")
+
+    def test_latest_general_quota_is_shared_across_codex_panes(self):
+        older = render._empty_agent_status("codex")
+        older.update({
+            "quota_slots": [{"duration": "7d", "reset": "2.9d", "pct": 5}],
+            "quota_status": "ok",
+            "_quota_limit_id": "codex",
+            "_quota_observed_at": 100,
+        })
+        newer = render._empty_agent_status("codex")
+        newer.update({
+            "quota_slots": [{"duration": "7d", "reset": "2.8d", "pct": 6}],
+            "quota_status": "ok",
+            "_quota_limit_id": "codex",
+            "_quota_observed_at": 200,
+        })
+        inactive_model_limit = render._empty_agent_status("codex")
+        inactive_model_limit.update({
+            "quota_slots": [{"duration": "7d", "reset": "7.0d", "pct": 0}],
+            "quota_status": "ok",
+            "_quota_limit_id": "codex_bengalfox",
+            "_quota_observed_at": 300,
+        })
+
+        render.share_latest_codex_quota([older, inactive_model_limit, newer])
+
+        for status in (older, inactive_model_limit, newer):
+            self.assertEqual(status["quota_slots"], [
+                {"duration": "7d", "reset": "2.8d", "pct": 6},
+            ])
 
     def test_context_is_clamped_to_one_hundred(self):
         self._write_records(self._turn(), self._started(100), self._tokens(10000))

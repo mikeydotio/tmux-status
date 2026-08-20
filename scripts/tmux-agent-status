@@ -107,9 +107,6 @@ append_quota() {
     local duration="$1" reset="$2" pct="$3" color="$4"
     [ -n "$duration" ] && [ -n "$reset" ] && [ -n "$pct" ] || return
     local label="$reset" display bar
-    if [ "$AGENT_PROVIDER" = "codex" ]; then
-        label="${duration}/${reset}"
-    fi
     if [ "$pct" = "X" ]; then display="X"; else display="${pct}%"; fi
     bar=$(bar_char "$pct")
     append_separator

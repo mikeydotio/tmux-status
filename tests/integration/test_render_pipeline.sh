@@ -93,12 +93,13 @@ case "$claude_out" in *'$'*) die "cost/dollar must be gone from the combined lin
 case "$claude_out" in *"⋯"*) die "fresh cache must NOT show stale marker: $claude_out" ;; *) pass "no stale marker when fresh" ;; esac
 [ "$git_out" = "$EXPECT_GIT" ] && pass "git line content" || die "git line: $git_out"
 
-# Codex quota includes both the window duration and reset countdown and omits
-# an absent second window without adding a provider badge.
+# Codex quota matches Claude's remaining-time label and omits an absent second
+# window without adding a provider badge.
 write_codex_cache 9999999999
 codex_out="$(bash "$AGENT_READER" "$PANE")"
 case "$codex_out" in *"GPT-5.6 Sol"*"xhigh"*"21%"*) pass "Codex model+effort+ctx" ;; *) die "Codex line: $codex_out" ;; esac
-case "$codex_out" in *"7d/5.1d:"*"14%"*) pass "Codex window/reset quota" ;; *) die "Codex quota: $codex_out" ;; esac
+case "$codex_out" in *"5.1d:"*"14%"*) pass "Codex remaining-time quota" ;; *) die "Codex quota: $codex_out" ;; esac
+case "$codex_out" in *"7d/"*) die "Codex quota must not prefix the window duration: $codex_out" ;; *) pass "Codex window duration omitted" ;; esac
 case "$codex_out" in *"codex"*|*"Codex"*) die "line 0 must not add a provider badge: $codex_out" ;; *) pass "no provider badge" ;; esac
 
 # An identified agent with only a model omits effort/context/quota segments.
