@@ -1,16 +1,14 @@
 """tmux-status render daemon.
 
-Precomputes the per-pane status-bar data (Claude model/effort/context/quota/cost
-and git/path) on its own cadence and writes one small shell-sourceable cache file
-per pane. The tmux ``#()`` status scripts then become fork-free readers that just
-``source`` the cache and ``printf`` — moving ALL heavy work (process-tree walks,
-transcript parsing, quota HTTP, cost ``os.walk``, git subprocesses) off the tmux
-render path so it can never pile up.
+Precomputes per-pane Claude Code or Codex model/effort/context/quota plus
+git/path on its own cadence and writes one small shell-sourceable cache file per
+pane. The tmux ``#()`` status scripts are cache-only readers that just ``source``
+and ``printf`` — moving all process walks, transcript/rollout parsing, Claude
+quota HTTP, and git subprocesses off the tmux render path.
 
-The cache contract is the exact ``KEY=value`` set the old ``tmux-claude-status``
-heredoc emitted for ``eval`` (model, quota, cost), plus ``GIT_LINE`` and
-``RENDER_TS``. Because the readers keep the original bash formatting unchanged,
-status-bar output stays byte-for-byte identical.
+The cache contract uses provider-neutral ``AGENT_*`` fields plus the independent
+``GIT_LINE`` and ``RENDER_TS``. Claude rendering remains compatible while Codex
+adds local rollout-derived metrics without hooks or API calls.
 
 Design mirrors ``server.py``: a single managed instance (launchd ``KeepAlive`` /
 systemd ``Restart``) plus an advisory flock singleton guard, SIGTERM/SIGINT clean
@@ -21,7 +19,9 @@ import argparse
 import glob
 import json
 import logging
+import math
 import os
+import platform
 import re
 import shlex
 import signal
@@ -40,6 +40,11 @@ DEFAULT_INTERVAL = 5
 MAX_BACKOFF = 60
 RENDER_DIRNAME = "render"
 TRANSCRIPT_TAIL_BYTES = 512000
+
+# Exact rollout paths are append-only for a live Codex session. Cache the most
+# recent general-account quota snapshot so a newer model-specific token event
+# does not force a multi-megabyte backward scan on every render tick.
+_CODEX_GENERAL_QUOTA_CACHE = {}
 
 # launchd (macOS) and systemd (Linux) start daemons with a minimal PATH that
 # usually omits Homebrew/local bin dirs — so `tmux` and `git` would not resolve
@@ -70,16 +75,50 @@ def _parse_ps_output(text):
     return ps_map
 
 
-def build_ps_map():
-    """One process-table snapshot per tick (replaces the per-pane ``ps`` loop)."""
+def _parse_process_output(text):
+    """Parse ``ps`` rows into PID-keyed process metadata.
+
+    Expected columns are ``pid ppid lstart comm``. ``lstart`` is five fields on
+    both BSD/macOS and procps/Linux, leaving the command at field eight. A bad
+    row is ignored so a single disappearing process cannot abort a render tick.
+    """
+    processes = {}
+    for line in text.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) != 8:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            started = datetime.strptime(
+                " ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"
+            ).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            continue
+        processes[pid] = {
+            "pid": pid,
+            "ppid": ppid,
+            "started_at": started,
+            "command": parts[7],
+        }
+    return processes
+
+
+def build_process_snapshot():
+    """Take the one process-table snapshot used by an entire render tick."""
     try:
         out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
+            ["ps", "-axo", "pid=,ppid=,lstart=,comm="],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
         return {}
-    return _parse_ps_output(out.stdout)
+    return _parse_process_output(out.stdout)
+
+
+def build_ps_map():
+    """Compatibility helper returning only PID→PPID from a fresh snapshot."""
+    return {pid: process["ppid"] for pid, process in build_process_snapshot().items()}
 
 
 def walk_to_ancestor(pid, ancestor, ps_map, max_depth=64):
@@ -104,6 +143,373 @@ def walk_to_ancestor(pid, ancestor, ps_map, max_depth=64):
             return False
         cur = nxt
     return False
+
+
+def _distance_to_ancestor(pid, ancestor, ps_map, max_depth=64):
+    """Return descendant distance to ``ancestor``, or ``None`` without a match."""
+    try:
+        cur = int(pid)
+        ancestor = int(ancestor)
+    except (TypeError, ValueError):
+        return None
+    for distance in range(max_depth + 1):
+        if cur == ancestor:
+            return distance
+        if not cur or cur in (0, 1):
+            return None
+        cur = ps_map.get(cur)
+        if cur is None:
+            return None
+    return None
+
+
+def _is_codex_command(command):
+    """True only for known Codex executable names, never arbitrary arguments."""
+    name = os.path.basename(str(command or "")).lower()
+    return name == "codex" or name.startswith("codex-")
+
+
+def select_agent_process(pane_pid, claude_sessions, processes):
+    """Select the active agent descendant for a pane.
+
+    The closest descendant to the pane process wins. Equal-depth candidates are
+    ordered by process start time (newest first), then PID for determinism.
+    Claude candidates come from its authoritative live session files; Codex
+    candidates come from exact executable names in the shared process snapshot.
+    """
+    ps_map = {pid: process.get("ppid") for pid, process in processes.items()}
+    candidates = []
+    for session in claude_sessions:
+        pid = session.get("pid")
+        # A stale Claude session file can survive PID reuse. If that PID now
+        # names the Codex executable, its live process identity takes precedence.
+        if _is_codex_command(processes.get(pid, {}).get("command")):
+            continue
+        distance = _distance_to_ancestor(pid, pane_pid, ps_map)
+        if distance is None:
+            continue
+        process = processes.get(pid, {})
+        candidates.append({
+            "provider": "claude",
+            "pid": pid,
+            "distance": distance,
+            "started_at": process.get("started_at", 0),
+            "session": session,
+        })
+    for pid, process in processes.items():
+        if not _is_codex_command(process.get("command")):
+            continue
+        distance = _distance_to_ancestor(pid, pane_pid, ps_map)
+        if distance is None:
+            continue
+        candidates.append({
+            "provider": "codex",
+            "pid": pid,
+            "distance": distance,
+            "started_at": process.get("started_at", 0),
+        })
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda candidate: (
+            candidate["distance"],
+            -float(candidate.get("started_at") or 0),
+            -int(candidate["pid"]),
+        ),
+    )
+
+
+def _valid_rollout_path(path, codex_home):
+    """Return a canonical Codex rollout path, or ``None`` when out of scope."""
+    if not path or not str(path).endswith(".jsonl"):
+        return None
+    try:
+        candidate = os.path.realpath(path)
+        sessions_root = os.path.realpath(os.path.join(codex_home, "sessions"))
+        if os.path.commonpath((candidate, sessions_root)) != sessions_root:
+            return None
+        if not os.path.isfile(candidate):
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _single_rollout(paths, codex_home):
+    valid = {
+        resolved for path in paths
+        if (resolved := _valid_rollout_path(path, codex_home)) is not None
+    }
+    return next(iter(valid)) if len(valid) == 1 else None
+
+
+def _parse_lsof_rollouts(text, requested_pids, codex_home):
+    paths_by_pid = {int(pid): [] for pid in requested_pids}
+    current_pid = None
+    for line in text.splitlines():
+        if line.startswith("p"):
+            try:
+                current_pid = int(line[1:])
+            except ValueError:
+                current_pid = None
+        elif line.startswith("n") and current_pid in paths_by_pid:
+            paths_by_pid[current_pid].append(line[1:])
+    return {
+        pid: rollout
+        for pid, paths in paths_by_pid.items()
+        if (rollout := _single_rollout(paths, codex_home)) is not None
+    }
+
+
+def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"):
+    """Resolve exact open Codex rollout files for a batch of process IDs.
+
+    Linux reads descriptor symlinks directly. macOS performs one `lsof` call for
+    the full PID batch. A PID is returned only when exactly one unique rollout
+    under ``CODEX_HOME/sessions`` is open; ambiguity intentionally fails safe.
+    """
+    requested = sorted({int(pid) for pid in pids})
+    if not requested:
+        return {}
+    system_name = system_name or platform.system()
+    if system_name == "Linux":
+        resolved = {}
+        for pid in requested:
+            fd_dir = os.path.join(proc_root, str(pid), "fd")
+            paths = []
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    paths.append(os.readlink(os.path.join(fd_dir, fd)))
+                except OSError:
+                    continue
+            rollout = _single_rollout(paths, codex_home)
+            if rollout is not None:
+                resolved[pid] = rollout
+        return resolved
+    if system_name == "Darwin":
+        try:
+            out = subprocess.run(
+                ["lsof", "-n", "-F", "pn", "-p", ",".join(map(str, requested))],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return {}
+        return _parse_lsof_rollouts(out.stdout, requested, codex_home)
+    return {}
+
+
+# ── Codex rollout parsing ─────────────────────────────────────────────────
+def _empty_agent_status(provider):
+    return {
+        "provider": provider,
+        "model": None,
+        "effort": None,
+        "has_thinking": None,
+        "context_pct": None,
+        "quota_slots": [],
+        "quota_status": "none",
+        "quota_warn": False,
+    }
+
+
+def _read_tail_text(path, max_bytes=TRANSCRIPT_TAIL_BYTES):
+    """Read a bounded file tail, tolerating a partial first UTF-8/JSONL record."""
+    with open(path, "rb") as source:
+        source.seek(0, 2)
+        size = source.tell()
+        chunk_size = min(size, max_bytes)
+        source.seek(size - chunk_size)
+        return source.read().decode("utf-8", errors="replace")
+
+
+def _rounded_percent(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0, min(100, int(round(value))))
+
+
+def format_window_duration(window_minutes):
+    """Format a Codex quota window as a stable compact duration label."""
+    if isinstance(window_minutes, bool) or not isinstance(window_minutes, (int, float)):
+        return None
+    if not math.isfinite(window_minutes) or window_minutes <= 0:
+        return None
+    minutes = int(window_minutes)
+    if minutes != window_minutes:
+        return None
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
+def _format_reset_epoch(resets_at, now=None):
+    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
+        return None
+    if not math.isfinite(resets_at):
+        return None
+    now = time.time() if now is None else now
+    secs = max(0, int(resets_at - now))
+    if secs >= 86400:
+        return f"{secs / 86400:.1f}d"
+    if secs >= 3600:
+        return f"{secs / 3600:.1f}h"
+    return f"{secs // 60}m"
+
+
+def _codex_quota_slot(window, now=None):
+    if not isinstance(window, dict):
+        return None
+    duration = format_window_duration(window.get("window_minutes"))
+    pct = _rounded_percent(window.get("used_percent"))
+    reset = _format_reset_epoch(window.get("resets_at"), now=now)
+    if duration is None or pct is None or reset is None:
+        return None
+    return {"duration": duration, "reset": reset, "pct": pct}
+
+
+def _record_epoch(record):
+    value = record.get("timestamp") if isinstance(record, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) else 0
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def parse_codex_rollout(rollout, now=None):
+    """Parse the latest Codex turn/context/quota metrics from a rollout tail."""
+    status = _empty_agent_status("codex")
+    try:
+        file_stat = os.stat(rollout)
+        file_size = file_stat.st_size
+    except Exception:
+        return status
+
+    cache_key = (os.path.realpath(rollout), file_stat.st_dev, file_stat.st_ino)
+    cached_general_quota = _CODEX_GENERAL_QUOTA_CACHE.get(cache_key)
+
+    turn_context = None
+    task_started = None
+    token_count = None
+    quota_fallback = None
+    general_quota = None
+    scan_bytes = min(file_size, TRANSCRIPT_TAIL_BYTES)
+    while True:
+        try:
+            data = _read_tail_text(rollout, max_bytes=scan_bytes)
+        except Exception:
+            return status
+        for line in reversed(data.splitlines()):
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if turn_context is None and record.get("type") == "turn_context":
+                turn_context = payload
+            elif record.get("type") == "event_msg":
+                if task_started is None and payload.get("type") == "task_started":
+                    task_started = payload
+                elif payload.get("type") == "token_count":
+                    if token_count is None:
+                        token_count = payload
+                    limits = payload.get("rate_limits")
+                    if isinstance(limits, dict):
+                        candidate = {
+                            "payload": payload,
+                            "limit_id": limits.get("limit_id"),
+                            "observed_at": _record_epoch(record),
+                        }
+                        if quota_fallback is None:
+                            quota_fallback = candidate
+                        if general_quota is None and limits.get("limit_id") == "codex":
+                            general_quota = candidate
+                        elif general_quota is None and not limits.get("limit_id"):
+                            # Codex releases before named limit streams exposed
+                            # the same general quota without a limit identifier.
+                            general_quota = candidate
+        quota_ready = general_quota is not None or cached_general_quota is not None
+        if turn_context is not None and task_started is not None and token_count is not None and quota_ready:
+            break
+        if scan_bytes >= file_size:
+            break
+        scan_bytes = min(file_size, max(1, scan_bytes * 2))
+
+    if turn_context is not None:
+        model = turn_context.get("model")
+        effort = turn_context.get("effort")
+        status["model"] = model if isinstance(model, str) and model else None
+        status["effort"] = effort if isinstance(effort, str) and effort else None
+
+    context_window = task_started.get("model_context_window") if task_started else None
+    usage = token_count.get("info") if token_count else None
+    usage = usage.get("last_token_usage") if isinstance(usage, dict) else None
+    total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if (
+        isinstance(context_window, (int, float))
+        and not isinstance(context_window, bool)
+        and math.isfinite(context_window)
+        and context_window > 0
+        and isinstance(total_tokens, (int, float))
+        and not isinstance(total_tokens, bool)
+        and math.isfinite(total_tokens)
+    ):
+        status["context_pct"] = _rounded_percent(total_tokens / context_window * 100)
+
+    if general_quota is not None:
+        _CODEX_GENERAL_QUOTA_CACHE[cache_key] = general_quota
+        cached_general_quota = general_quota
+        if len(_CODEX_GENERAL_QUOTA_CACHE) > 128:
+            _CODEX_GENERAL_QUOTA_CACHE.pop(next(iter(_CODEX_GENERAL_QUOTA_CACHE)))
+
+    quota_record = cached_general_quota or quota_fallback
+    quota_token_count = quota_record.get("payload") if quota_record else None
+    limits = quota_token_count.get("rate_limits") if quota_token_count else None
+    if isinstance(limits, dict):
+        for key in ("primary", "secondary"):
+            slot = _codex_quota_slot(limits.get(key), now=now)
+            if slot is not None:
+                status["quota_slots"].append(slot)
+        if status["quota_slots"]:
+            status["quota_status"] = (
+                "blocked" if limits.get("rate_limit_reached_type") else "ok"
+            )
+            status["_quota_limit_id"] = quota_record.get("limit_id")
+            status["_quota_observed_at"] = quota_record.get("observed_at", 0)
+    return status
+
+
+def share_latest_codex_quota(statuses):
+    """Use the freshest general-account quota across exact live rollouts."""
+    general = [
+        status for status in statuses
+        if status.get("_quota_limit_id") == "codex" and status.get("quota_slots")
+    ]
+    if not general:
+        return
+    latest = max(general, key=lambda status: status.get("_quota_observed_at", 0))
+    for status in statuses:
+        status["quota_slots"] = [dict(slot) for slot in latest["quota_slots"]]
+        status["quota_status"] = latest.get("quota_status", "none")
+        status["quota_warn"] = latest.get("quota_warn", False)
+        status["_quota_limit_id"] = latest.get("_quota_limit_id")
+        status["_quota_observed_at"] = latest.get("_quota_observed_at", 0)
 
 
 # ── Claude session discovery ───────────────────────────────────────────────
@@ -299,8 +705,16 @@ def read_context_pct(conversation_id, home, default=0):
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
+def _expand_home_path(value, home):
+    if value == "~":
+        return home
+    if value.startswith("~/"):
+        return os.path.join(home, value[2:])
+    return value
+
+
 def load_settings(home):
-    """Read quota-related keys from ``~/.config/tmux-status/settings.conf``."""
+    """Read daemon settings from ``~/.config/tmux-status/settings.conf``."""
     config_dir = os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config"))
     settings_file = os.path.join(config_dir, "tmux-status", "settings.conf")
     s = {
@@ -309,6 +723,7 @@ def load_settings(home):
         "quota_api_key": "",
         "quota_cache_ttl": 30,
         "quota_max_stale": 300,
+        "codex_home": os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"),
     }
     try:
         with open(settings_file) as sf:
@@ -337,6 +752,8 @@ def load_settings(home):
                         s["quota_max_stale"] = int(v)
                     except ValueError:
                         pass
+                elif k == "CODEX_HOME" and v:
+                    s["codex_home"] = _expand_home_path(v, home)
     except Exception:
         pass
     return s
@@ -564,22 +981,83 @@ def compute_git_line(path, home):
     return f"{rel} : {branch} ({status_str})"
 
 
-# ── Env assembly ───────────────────────────────────────────────────────────
-def claude_env_lines(model, effort, has_thinking, used_pct, quota_vars):
-    """Build the ``KEY=value`` lines the thin reader sources for the Claude line."""
-    return [
-        "MODEL=" + shlex.quote(model),
-        "SHORT_MODEL=" + shlex.quote(format_model(model)),
-        "USED_PCT=" + str(used_pct),
-        "EFFORT=" + shlex.quote(effort),
-        "HAS_THINKING=" + ("1" if has_thinking else "0"),
-        "QUOTA_STATUS=" + shlex.quote(quota_vars["quota_status"]),
-        "QUOTA_5H_PCT=" + shlex.quote(str(quota_vars["five_hour_pct"])),
-        "QUOTA_5H_REMAIN=" + shlex.quote(quota_vars["five_hour_remain"]),
-        "QUOTA_7D_PCT=" + shlex.quote(str(quota_vars["seven_day_pct"])),
-        "QUOTA_7D_REMAIN=" + shlex.quote(quota_vars["seven_day_remain"]),
-        "KEY_EXPIRY_WARN=" + ("1" if quota_vars["key_expiry_warn"] else "0"),
+# ── Provider adapters / env assembly ───────────────────────────────────────
+def build_claude_status(session, home, claude_dir):
+    """Adapt Claude's existing transcript+bridge precedence to a shared record."""
+    sid = session.get("session_id") or ""
+    transcript = find_transcript(session.get("cwd"), claude_dir, sid)
+    bridge = read_bridge(sid, home)
+    parsed = parse_transcript(transcript) if transcript else {
+        "model": "", "effort": "auto", "has_thinking": False,
+        "conversation_id": "",
+    }
+    model = parsed["model"] or bridge["model"]
+    if not model:
+        # Preserve Claude's historical blank-before-model behavior.
+        return None
+    status = _empty_agent_status("claude")
+    status.update({
+        "model": model,
+        "effort": bridge["effort"] or parsed["effort"],
+        "has_thinking": (
+            bridge["has_thinking"]
+            if bridge["has_thinking"] is not None
+            else parsed["has_thinking"]
+        ),
+        "context_pct": bridge["used_pct"],
+    })
+    return status
+
+
+def attach_claude_quota(status, quota_vars):
+    """Attach Claude's existing global quota values as normalized slots."""
+    status["quota_status"] = quota_vars["quota_status"]
+    status["quota_warn"] = quota_vars["key_expiry_warn"]
+    if quota_vars["quota_status"] not in ("none", "no_key"):
+        status["quota_slots"] = [
+            {
+                "duration": "5h",
+                "reset": quota_vars["five_hour_remain"],
+                "pct": quota_vars["five_hour_pct"],
+            },
+            {
+                "duration": "7d",
+                "reset": quota_vars["seven_day_remain"],
+                "pct": quota_vars["seven_day_pct"],
+            },
+        ]
+
+
+def _shell_value(value):
+    return shlex.quote("" if value is None else str(value))
+
+
+def agent_env_lines(status):
+    """Build the provider-neutral ``AGENT_*`` cache contract."""
+    thinking = status.get("has_thinking")
+    slots = list(status.get("quota_slots") or [])[:2]
+    while len(slots) < 2:
+        slots.append({})
+    lines = [
+        "AGENT_PROVIDER=" + _shell_value(status.get("provider")),
+        "AGENT_MODEL=" + _shell_value(status.get("model")),
+        "AGENT_SHORT_MODEL=" + _shell_value(format_model(status.get("model") or "")),
+        "AGENT_EFFORT=" + _shell_value(status.get("effort")),
+        "AGENT_HAS_THINKING=" + (
+            "''" if thinking is None else ("1" if thinking else "0")
+        ),
+        "AGENT_CONTEXT_PCT=" + _shell_value(status.get("context_pct")),
+        "AGENT_QUOTA_STATUS=" + _shell_value(status.get("quota_status") or "none"),
+        "AGENT_QUOTA_WARN=" + ("1" if status.get("quota_warn") else "0"),
     ]
+    for index, slot in enumerate(slots, start=1):
+        prefix = f"AGENT_QUOTA_{index}_"
+        lines.extend([
+            prefix + "DURATION=" + _shell_value(slot.get("duration")),
+            prefix + "RESET=" + _shell_value(slot.get("reset")),
+            prefix + "PCT=" + _shell_value(slot.get("pct")),
+        ])
+    return lines
 
 
 # ── Panes / cache ──────────────────────────────────────────────────────────
@@ -647,55 +1125,57 @@ def render_once(home=None, owner_pid=None):
         return 0
 
     os.makedirs(render_dir, exist_ok=True)
-    ps_map = build_ps_map()
+    settings = load_settings(home)
+    processes = build_process_snapshot()
     sessions = load_sessions(claude_dir)
 
-    # Pass 1 — resolve each pane to its Claude session ONCE: the live session
-    # file keys the exact transcript (model/effort) and the context bridge
-    # (used_pct + model + live effort). The model is the transcript's once an
-    # assistant reply exists, else the bridge's — so a fresh or /clear'd session
-    # (whose new transcript has no assistant message yet) still renders instead of
-    # going blank. Only fetch global quota if at least one pane resolves a model
-    # (matches the old script, which never touched quota for non-Claude panes).
-    # parse_transcript runs here and is reused in pass 2 — never twice.
-    _EMPTY_PARSED = {"model": "", "effort": "auto", "has_thinking": False, "conversation_id": ""}
-    resolved = []
-    any_claude = False
+    # Pass 1 — select one provider process per pane from the shared snapshot.
+    # Resolve every selected Codex PID in one platform operation (one batched
+    # lsof on macOS; direct fd reads on Linux), never by guessing a recent file.
+    selected = []
     for pane in panes:
-        session = resolve_pane_session(pane["pid"], sessions, ps_map)
-        sid = session.get("session_id") or "" if session else ""
-        transcript = find_transcript(session["cwd"], claude_dir, sid) if session else None
-        bridge = read_bridge(sid, home)
-        parsed = parse_transcript(transcript) if transcript else _EMPTY_PARSED
-        model = parsed["model"] or bridge["model"]
-        if model:
-            any_claude = True
-        resolved.append((pane, transcript, parsed, bridge, model))
+        selected.append((pane, select_agent_process(pane["pid"], sessions, processes)))
+    codex_rollouts = resolve_codex_rollouts(
+        [agent["pid"] for _, agent in selected if agent and agent["provider"] == "codex"],
+        settings["codex_home"],
+    )
 
-    quota_vars = None
-    if any_claude:
-        settings = load_settings(home)
+    # Pass 2 — adapt the provider's exact local source into one status record.
+    resolved = []
+    claude_statuses = []
+    codex_statuses = []
+    for pane, agent in selected:
+        status = None
+        if agent and agent["provider"] == "claude":
+            status = build_claude_status(agent["session"], home, claude_dir)
+            if status is not None:
+                claude_statuses.append(status)
+        elif agent and agent["provider"] == "codex":
+            rollout = codex_rollouts.get(agent["pid"])
+            if rollout:
+                status = parse_codex_rollout(rollout)
+                codex_statuses.append(status)
+        resolved.append((pane, status))
+
+    # Claude quota remains global and uses only the existing Claude quota server.
+    # Codex quota is already local to each rollout and never traverses that path.
+    if claude_statuses:
         quota_vars = compute_quota_vars(settings, home)
+        for status in claude_statuses:
+            attach_claude_quota(status, quota_vars)
 
-    # Pass 2 — pure assembly + write (no re-resolution, no second transcript parse).
+    # The `codex` limit is account-wide. Different live rollouts can also emit
+    # named model-specific limits, so render the freshest general snapshot on
+    # every Codex pane rather than allowing an inactive 0% bucket to replace it.
+    share_latest_codex_quota(codex_statuses)
+
+    # Pass 3 — pure assembly + atomic write.
     live_pids = set()
-    for pane, transcript, parsed, bridge, model in resolved:
+    for pane, status in resolved:
         live_pids.add(pane["pid"])
         lines = []
-        if model and quota_vars is not None:
-            # Effort precedence: live statusLine hook (bridge) > transcript
-            # /effort echo > settings.json default > "auto". parse_transcript
-            # already folds the last three, so the bridge value simply wins when
-            # present. Same for the thinking toggle (None = bridge silent).
-            effort = bridge["effort"] or parsed["effort"]
-            has_thinking = (
-                bridge["has_thinking"]
-                if bridge["has_thinking"] is not None
-                else parsed["has_thinking"]
-            )
-            lines.extend(claude_env_lines(
-                model, effort, has_thinking, bridge["used_pct"], quota_vars,
-            ))
+        if status is not None:
+            lines.extend(agent_env_lines(status))
         lines.append("GIT_LINE=" + shlex.quote(compute_git_line(pane["path"], home)))
         lines.append("RENDER_TS=" + str(render_ts))
         try:

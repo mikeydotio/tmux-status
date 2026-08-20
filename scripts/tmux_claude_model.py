@@ -1,15 +1,18 @@
-"""Claude model-ID shortener for the tmux status bar.
+"""Agent model-ID shortener for the tmux status bar.
 
-Used by scripts/tmux-claude-status to turn raw model IDs from the JSONL
-transcript into short labels suitable for the status line.
+Turns Claude and GPT/Codex JSONL model IDs into compact status-line labels.
 """
 import re
 
-_MODEL_RE = re.compile(r"(opus|sonnet|haiku)-(\d+)(?:-(\d+))?")
+_CLAUDE_MODEL_RE = re.compile(r"(opus|sonnet|haiku)-(\d+)(?:-(\d+))?")
+_GPT_MODEL_RE = re.compile(
+    r"^gpt-(5(?:\.\d+)*)(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$",
+    re.IGNORECASE,
+)
 
 
 def format_model(model_id: str) -> str:
-    """Render a Claude model ID as a short status-bar label.
+    """Render a Claude or GPT/Codex model ID as a short status-bar label.
 
     Examples:
         claude-opus-4-7             -> "Opus 4.7"
@@ -17,6 +20,8 @@ def format_model(model_id: str) -> str:
         claude-opus-4-1-20250805    -> "Opus 4.1"      (8-digit date tail ignored)
         claude-sonnet-4-20250514    -> "Sonnet 4"      (no minor -- date follows major)
         claude-haiku-4-10           -> "Haiku 4.10"
+        gpt-5.6-sol                 -> "GPT-5.6 Sol"
+        gpt-5.1-codex-max           -> "GPT-5.1 Codex Max"
         <unmatched>                 -> raw input
         ""                          -> ""
 
@@ -26,10 +31,17 @@ def format_model(model_id: str) -> str:
         return ""
 
     lower = model_id.lower()
+    gpt = _GPT_MODEL_RE.fullmatch(lower)
+    if gpt:
+        label = f"GPT-{gpt.group(1)}"
+        if gpt.group(2):
+            label += " " + " ".join(part.capitalize() for part in gpt.group(2).split("-"))
+        return label
+
     is_1m = "[1m]" in lower
     bare = re.sub(r"\[[^\]]*\]", "", lower)
 
-    m = _MODEL_RE.search(bare)
+    m = _CLAUDE_MODEL_RE.search(bare)
     if not m:
         return model_id
 

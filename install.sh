@@ -49,7 +49,7 @@ SOURCE_MARKER="tmux-status/overlay/status.conf"
 # Scripts to symlink into ~/.local/bin/
 # (tmux_claude_model.py is no longer symlinked: the thin readers don't import it
 #  and the render daemon uses its own vendored copy inside the server package.)
-SCRIPTS=(tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-prune-clients tmux-status-context-hook.js)
+SCRIPTS=(tmux-agent-status tmux-claude-status tmux-git-status tmux-status-poke tmux-status-apply-config tmux-status-session tmux-status-prune-clients tmux-status-context-hook.js)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 STATUSLINE_CMD='node "$HOME/.local/bin/tmux-status-context-hook.js"'
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tmux-status-server"
 version = "0.1.0"
-description = "Scrape claude.ai for quota data and serve via HTTP REST API"
+description = "Claude quota server and Claude/Codex tmux status renderer"
 requires-python = ">=3.10"
 dependencies = [
     "bottle>=0.12.25",

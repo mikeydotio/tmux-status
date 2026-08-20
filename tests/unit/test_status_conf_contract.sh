@@ -2,7 +2,7 @@
 # Contract gate: the overlay must invoke the thin readers with the cache key.
 #
 # The render daemon writes a per-pane cache keyed by PID (pane-<pid>.env) and the
-# readers (tmux-claude-status / tmux-git-status) look it up by their first arg.
+# readers (tmux-agent-status / tmux-git-status) look it up by their first arg.
 # So overlay/status.conf MUST pass "#{pane_pid}" to every reader. Commit 65b2f1d
 # changed the git line to the pid contract but a running tmux server that was
 # never re-sourced kept passing "#{pane_current_path}" — the new reader turned
@@ -32,7 +32,7 @@ while IFS= read -r line; do
         '#'*) continue ;;
     esac
     case "$line" in
-        *tmux-claude-status*|*tmux-git-status*) ;;
+        *tmux-agent-status*|*tmux-claude-status*|*tmux-git-status*) ;;
         *) continue ;;
     esac
     readers=$((readers + 1))
@@ -50,6 +50,19 @@ done < "$CONF"
 if [ "$readers" -lt 2 ]; then
     die "expected >=2 reader invocations in overlay, found $readers — gate may be matching nothing"
 fi
+
+# Line 0 uses the provider-neutral reader; the Claude name is compatibility-only.
+if grep -q 'status-format\[0\].*tmux-agent-status.*#{pane_pid}' "$CONF"; then
+    pass "line 0 uses tmux-agent-status"
+else
+    die "line 0 does not use tmux-agent-status with #{pane_pid}"
+fi
+
+# Automatic naming recognizes both supported agent commands.
+rename_line="$(grep 'automatic-rename-format' "$CONF" || true)"
+case "$rename_line" in *claude*codex*|*codex*claude*) pass "automatic naming recognizes Claude and Codex" ;;
+    *) die "automatic naming must recognize both Claude and Codex: $rename_line" ;;
+esac
 
 # ── Pane-safety gate (view-mode hijack regression) ─────────────
 # tmux renders ANY run-shell stdout — even backgrounded with -b — into the

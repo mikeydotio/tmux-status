@@ -26,7 +26,7 @@ class TestRenderdSystemdUnit(unittest.TestCase):
         self.assertIn("[Install]", self.content)
 
     def test_description(self):
-        self.assertIn("Description=tmux-status render daemon", self.content)
+        self.assertIn("Description=tmux-status Claude/Codex agent render daemon", self.content)
 
     def test_exec_start(self):
         self.assertIn("ExecStart=%h/.local/bin/tmux-status-renderd", self.content)
@@ -53,6 +53,9 @@ class TestRenderdLaunchdPlist(unittest.TestCase):
 
     def test_valid_xml(self):
         ET.fromstring(self.content)  # should not raise
+
+    def test_dual_provider_description(self):
+        self.assertIn("Claude Code and Codex agent status render daemon", self.content)
 
     def test_label(self):
         self.assertIn("<string>io.mikey.tmux-status-renderd</string>", self.content)

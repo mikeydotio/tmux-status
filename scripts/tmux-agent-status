@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# tmux-agent-status — cache-only Claude Code / Codex status reader.
+#
+# Usage: tmux-agent-status <pane_pid>
+#
+# All process discovery, JSONL parsing, quota handling, and model formatting are
+# performed by tmux-status-renderd. This reader only sources one atomic per-pane
+# cache and formats it; keep heavy process, transcript, Python, git, and network
+# work out of this file.
+
+PANE_PID="$1"
+[ -z "$PANE_PID" ] && exit 0
+[ -z "$HOME" ] && HOME=$(eval echo ~)
+
+CACHE="${HOME}/.cache/tmux-status/render/pane-${PANE_PID}.env"
+[ -f "$CACHE" ] || exit 0
+
+# Provider-neutral cache defaults. Empty metrics are intentionally omitted from
+# the rendered line without hiding other available metrics.
+AGENT_PROVIDER=""; AGENT_MODEL=""; AGENT_SHORT_MODEL=""; AGENT_EFFORT=""
+AGENT_HAS_THINKING=""; AGENT_CONTEXT_PCT=""
+AGENT_QUOTA_STATUS="none"; AGENT_QUOTA_WARN=0
+AGENT_QUOTA_1_DURATION=""; AGENT_QUOTA_1_RESET=""; AGENT_QUOTA_1_PCT=""
+AGENT_QUOTA_2_DURATION=""; AGENT_QUOTA_2_RESET=""; AGENT_QUOTA_2_PCT=""
+RENDER_TS=0
+# shellcheck source=/dev/null
+. "$CACHE" 2>/dev/null || exit 0
+
+# A non-agent pane has only GIT_LINE + RENDER_TS in its cache.
+[ -z "$AGENT_PROVIDER" ] && exit 0
+
+# ── Staleness marker ───────────────────────────────────────────
+STALE_MARK=""
+if [ "${RENDER_STALE_MARKER:-1}" != "0" ] && [ "${RENDER_STALE_MARKER:-1}" != "false" ]; then
+    RENDER_MAX_STALE="${RENDER_MAX_STALE:-30}"
+    _now="${EPOCHSECONDS:-}"
+    [ -z "$_now" ] && _now=$(date +%s 2>/dev/null)
+    if [ -n "$_now" ] && [ "$RENDER_TS" -gt 0 ] 2>/dev/null; then
+        if [ "$(( _now - RENDER_TS ))" -gt "$RENDER_MAX_STALE" ] 2>/dev/null; then
+            STALE_MARK=" #[fg=colour8]⋯"
+        fi
+    fi
+fi
+
+# ── Bar character + color from percentage ──────────────────────
+bar_char() {
+    local pct="$1"
+    local chars=("_" "▂" "▃" "▄" "▅" "▆" "▇" "█")
+    local colors=(34 70 106 142 178 214 208 196)
+    if ! [ "$pct" -eq "$pct" ] 2>/dev/null; then
+        echo "#[fg=colour196]✕"
+        return
+    fi
+    local idx=0
+    if   [ "$pct" -le 0 ]  2>/dev/null; then idx=0
+    elif [ "$pct" -le 12 ] 2>/dev/null; then idx=0
+    elif [ "$pct" -le 25 ] 2>/dev/null; then idx=1
+    elif [ "$pct" -le 37 ] 2>/dev/null; then idx=2
+    elif [ "$pct" -le 50 ] 2>/dev/null; then idx=3
+    elif [ "$pct" -le 62 ] 2>/dev/null; then idx=4
+    elif [ "$pct" -le 75 ] 2>/dev/null; then idx=5
+    elif [ "$pct" -le 87 ] 2>/dev/null; then idx=6
+    else idx=7
+    fi
+    echo "#[fg=colour${colors[$idx]}]${chars[$idx]}"
+}
+
+C_MODEL="colour117"
+C_CTX="colour150"
+C_QUOTA_1="colour223"
+C_QUOTA_2="colour186"
+case "$AGENT_QUOTA_STATUS" in
+    session_key_expired|blocked|error|rate_limited|key_expired|stale)
+        C_QUOTA_1="colour196"; C_QUOTA_2="colour196" ;;
+    *)
+        if [ "${AGENT_QUOTA_WARN:-0}" = "1" ]; then
+            C_QUOTA_1="colour196"; C_QUOTA_2="colour196"
+        fi ;;
+esac
+
+AGENT_LINE=""
+append_separator() {
+    if [ -n "$AGENT_LINE" ]; then
+        AGENT_LINE="${AGENT_LINE} #[fg=colour8]│"
+    fi
+}
+
+# Model + effort are one segment. Thinking remains Claude-compatible: `auto+`
+# means automatic effort with thinking enabled.
+if [ -n "$AGENT_MODEL" ]; then
+    short_model="${AGENT_SHORT_MODEL:-$AGENT_MODEL}"
+    AGENT_LINE=" #[fg=${C_MODEL}]${short_model}"
+    if [ -n "$AGENT_EFFORT" ]; then
+        EFFORT_DISPLAY="$AGENT_EFFORT"
+        [ "${AGENT_HAS_THINKING:-0}" = "1" ] && [ "$AGENT_EFFORT" = "auto" ] && EFFORT_DISPLAY="auto+"
+        AGENT_LINE="${AGENT_LINE} #[fg=colour8](#[fg=${C_MODEL}]${EFFORT_DISPLAY}#[fg=colour8])"
+    fi
+fi
+
+if [ -n "$AGENT_CONTEXT_PCT" ]; then
+    CTX_BAR=$(bar_char "$AGENT_CONTEXT_PCT")
+    append_separator
+    AGENT_LINE="${AGENT_LINE} #[fg=${C_CTX}]Ctx: ${CTX_BAR} #[fg=${C_CTX}]${AGENT_CONTEXT_PCT}%"
+fi
+
+append_quota() {
+    local duration="$1" reset="$2" pct="$3" color="$4"
+    [ -n "$duration" ] && [ -n "$reset" ] && [ -n "$pct" ] || return
+    local label="$reset" display bar
+    if [ "$pct" = "X" ]; then display="X"; else display="${pct}%"; fi
+    bar=$(bar_char "$pct")
+    append_separator
+    AGENT_LINE="${AGENT_LINE} #[fg=${color}]${label}: ${bar} #[fg=${color}]${display}"
+}
+
+append_quota "$AGENT_QUOTA_1_DURATION" "$AGENT_QUOTA_1_RESET" "$AGENT_QUOTA_1_PCT" "$C_QUOTA_1"
+append_quota "$AGENT_QUOTA_2_DURATION" "$AGENT_QUOTA_2_RESET" "$AGENT_QUOTA_2_PCT" "$C_QUOTA_2"
+
+[ -z "$AGENT_LINE" ] && exit 0
+printf '%s%s' "$AGENT_LINE" "$STALE_MARK"

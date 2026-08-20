@@ -52,6 +52,18 @@ class TestFormatModel(unittest.TestCase):
     def test_uppercase_1m_marker(self):
         self.assertEqual(format_model("claude-opus-4-7[1M]"), "Opus 4.7 1M")
 
+    def test_codex_model(self):
+        self.assertEqual(format_model("gpt-5.6-sol"), "GPT-5.6 Sol")
+
+    def test_gpt_codex_variant(self):
+        self.assertEqual(format_model("gpt-5.1-codex-max"), "GPT-5.1 Codex Max")
+
+    def test_gpt_model_without_variant(self):
+        self.assertEqual(format_model("gpt-5.4"), "GPT-5.4")
+
+    def test_unrecognized_gpt_shape_is_preserved(self):
+        self.assertEqual(format_model("gpt-latest"), "gpt-latest")
+
 
 if __name__ == "__main__":
     unittest.main()

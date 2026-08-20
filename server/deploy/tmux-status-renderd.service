@@ -1,5 +1,5 @@
 [Unit]
-Description=tmux-status render daemon
+Description=tmux-status Claude/Codex agent render daemon
 
 [Service]
 ExecStart=%h/.local/bin/tmux-status-renderd
