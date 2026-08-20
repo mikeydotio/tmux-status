@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [v2.6.0] - 2026-08-19
 
 ### Added
 - Add first-class Codex model, effort, context, quota, and window-name support
@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 - Normalize the render cache for Claude Code and Codex without adding work to
   the fork-free tmux reader path.
+
+### Fixed
+- Show Codex quota reset countdowns without repeating the window duration.
+- Prefer the freshest general Codex account quota across exact active rollouts
+  instead of an inactive model-specific zero-usage snapshot.
+
+_[manual]_
 
 ## [v2.5.3] - 2026-07-05
 
