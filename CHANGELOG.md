@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+## [v2.7.0] - 2026-08-23
+
+### Fixed
+- Keep Codex status stable when one long-lived process retains multiple root
+  rollouts and metadata-linked subagents: select by root-thread activity, ignore
+  child-only writes, restore sticky choices after daemon restarts, and preserve
+  visibly stale last-known-good status when activity evidence is ambiguous.
+
+_[manual]_
+
 ## [v2.6.0] - 2026-08-19
 
 ### Added

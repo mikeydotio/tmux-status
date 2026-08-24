@@ -40,6 +40,7 @@ DEFAULT_INTERVAL = 5
 MAX_BACKOFF = 60
 RENDER_DIRNAME = "render"
 TRANSCRIPT_TAIL_BYTES = 512000
+CODEX_SELECTION_SUFFIX = ".codex.json"
 
 # Exact rollout paths are append-only for a live Codex session. Cache the most
 # recent general-account quota snapshot so a newer model-specific token event
@@ -236,15 +237,174 @@ def _valid_rollout_path(path, codex_home):
     return candidate
 
 
-def _single_rollout(paths, codex_home):
+def _rollout_identity(path):
+    """Return ``(thread_id, parent_thread_id)`` from rollout session metadata.
+
+    Newer Codex releases can keep the primary rollout and one or more subagent
+    rollouts open in the same process.  Their first records carry the explicit
+    thread relationship needed to distinguish that case from unrelated open
+    JSONL files without guessing from timestamps or filenames.
+    """
+    try:
+        with open(path, encoding="utf-8") as source:
+            first_line = source.readline(TRANSCRIPT_TAIL_BYTES)
+        record = json.loads(first_line)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    thread_id = payload.get("id") or payload.get("session_id")
+    parent_id = payload.get("parent_thread_id")
+    if not isinstance(thread_id, str) or not thread_id:
+        return None
+    if parent_id is not None and (not isinstance(parent_id, str) or not parent_id):
+        return None
+    return thread_id, parent_id
+
+
+def _rollout_activity(path):
+    """Return the newest valid event timestamp in a root rollout tail."""
+    try:
+        data = _read_tail_text(path)
+    except Exception:
+        return None
+    latest = None
+    for line in data.splitlines():
+        try:
+            record = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        observed_at = _record_epoch(record)
+        if observed_at > 0 and (latest is None or observed_at > latest):
+            latest = observed_at
+    return latest
+
+
+def _rollout_graphs(valid_paths):
+    """Group exact open rollouts by their metadata-proven root thread."""
+    identities = {}
+    for path in valid_paths:
+        identity = _rollout_identity(path)
+        if identity is None:
+            return None
+        thread_id, parent_id = identity
+        if thread_id in identities:
+            return None
+        identities[thread_id] = {"path": path, "parent_id": parent_id}
+
+    groups = {}
+    for thread_id in identities:
+        current = thread_id
+        seen = set()
+        while identities[current]["parent_id"] is not None:
+            if current in seen:
+                return None
+            seen.add(current)
+            parent_id = identities[current]["parent_id"]
+            if parent_id not in identities:
+                return None
+            current = parent_id
+        root_id = current
+        group = groups.setdefault(root_id, {
+            "thread_id": root_id,
+            "path": identities[root_id]["path"],
+            "members": set(),
+        })
+        group["members"].add(thread_id)
+    return groups
+
+
+def _select_rollout_decision(paths, codex_home, previous=None):
+    """Choose a root rollout using graph proof, root activity, and stickiness.
+
+    ``previous`` is a persisted pane/Codex selection. When current evidence is
+    tied or malformed, an exact-open previous rollout is retained so the caller
+    can leave its last-known-good pane cache untouched and visibly stale.
+    """
     valid = {
         resolved for path in paths
         if (resolved := _valid_rollout_path(path, codex_home)) is not None
     }
-    return next(iter(valid)) if len(valid) == 1 else None
+    previous_path = None
+    if isinstance(previous, dict):
+        previous_path = _valid_rollout_path(previous.get("rollout"), codex_home)
+        if previous_path not in valid:
+            previous_path = None
+
+    def result(state, graph=None):
+        graph = graph or {}
+        return {
+            "state": state,
+            "path": graph.get("path") or previous_path,
+            "thread_id": graph.get("thread_id") or (
+                previous.get("thread_id") if isinstance(previous, dict) else None
+            ),
+            "activity": graph.get("activity") if graph else (
+                previous.get("activity") if isinstance(previous, dict) else None
+            ),
+        }
+
+    if len(valid) == 1:
+        path = next(iter(valid))
+        identity = _rollout_identity(path)
+        return result("selected", {
+            "path": path,
+            "thread_id": identity[0] if identity is not None else None,
+            "activity": _rollout_activity(path),
+        })
+    if not valid:
+        return result("none")
+
+    groups = _rollout_graphs(valid)
+    if groups is None:
+        return result("retain" if previous_path is not None else "none")
+    for group in groups.values():
+        group["activity"] = _rollout_activity(group["path"])
+    if len(groups) == 1:
+        return result("selected", next(iter(groups.values())))
+
+    previous_group = None
+    for group in groups.values():
+        if group["path"] != previous_path:
+            continue
+        previous_thread = previous.get("thread_id") if isinstance(previous, dict) else None
+        if previous_thread is not None and previous_thread != group["thread_id"]:
+            break
+        previous_group = group
+        break
+
+    # With several roots, every root must provide comparable activity evidence.
+    # Child-only writes never enter this comparison.
+    if any(group["activity"] is None for group in groups.values()):
+        return result("retain" if previous_group is not None else "none")
+    latest = max(group["activity"] for group in groups.values())
+    newest = [group for group in groups.values() if group["activity"] == latest]
+    if len(newest) != 1:
+        return result("retain" if previous_group is not None else "none")
+
+    winner = newest[0]
+    if previous_group is None:
+        return result("selected", winner)
+    if winner["thread_id"] == previous_group["thread_id"]:
+        return result("selected", winner)
+    if winner["activity"] > previous_group["activity"]:
+        return result("selected", winner)
+    return result("retain", previous_group)
 
 
-def _parse_lsof_rollouts(text, requested_pids, codex_home):
+def _select_rollout(paths, codex_home):
+    """Compatibility wrapper returning only a newly proven root path."""
+    decision = _select_rollout_decision(paths, codex_home)
+    return decision["path"] if decision["state"] == "selected" else None
+
+
+def _parse_lsof_rollout_paths(text, requested_pids):
+    """Parse one batched ``lsof -F pn`` response into PID-keyed paths."""
     paths_by_pid = {int(pid): [] for pid in requested_pids}
     current_pid = None
     for line in text.splitlines():
@@ -255,26 +415,34 @@ def _parse_lsof_rollouts(text, requested_pids, codex_home):
                 current_pid = None
         elif line.startswith("n") and current_pid in paths_by_pid:
             paths_by_pid[current_pid].append(line[1:])
+    return paths_by_pid
+
+
+def _parse_lsof_rollouts(text, requested_pids, codex_home):
+    paths_by_pid = _parse_lsof_rollout_paths(text, requested_pids)
     return {
         pid: rollout
         for pid, paths in paths_by_pid.items()
-        if (rollout := _single_rollout(paths, codex_home)) is not None
+        if (rollout := _select_rollout(paths, codex_home)) is not None
     }
 
 
-def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"):
+def resolve_codex_rollouts(
+    pids, codex_home, system_name=None, proc_root="/proc", include_candidates=False,
+):
     """Resolve exact open Codex rollout files for a batch of process IDs.
 
     Linux reads descriptor symlinks directly. macOS performs one `lsof` call for
-    the full PID batch. A PID is returned only when exactly one unique rollout
-    under ``CODEX_HOME/sessions`` is open; ambiguity intentionally fails safe.
+    the full PID batch. By default each PID maps to its newly proven root path;
+    ``include_candidates`` instead returns every exact-open candidate so the
+    renderer can apply pane-specific persisted stickiness.
     """
     requested = sorted({int(pid) for pid in pids})
     if not requested:
         return {}
     system_name = system_name or platform.system()
     if system_name == "Linux":
-        resolved = {}
+        paths_by_pid = {}
         for pid in requested:
             fd_dir = os.path.join(proc_root, str(pid), "fd")
             paths = []
@@ -287,10 +455,7 @@ def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"
                     paths.append(os.readlink(os.path.join(fd_dir, fd)))
                 except OSError:
                     continue
-            rollout = _single_rollout(paths, codex_home)
-            if rollout is not None:
-                resolved[pid] = rollout
-        return resolved
+            paths_by_pid[pid] = paths
     if system_name == "Darwin":
         try:
             out = subprocess.run(
@@ -299,8 +464,22 @@ def resolve_codex_rollouts(pids, codex_home, system_name=None, proc_root="/proc"
             )
         except Exception:
             return {}
-        return _parse_lsof_rollouts(out.stdout, requested, codex_home)
-    return {}
+        paths_by_pid = _parse_lsof_rollout_paths(out.stdout, requested)
+    elif system_name != "Linux":
+        return {}
+    if include_candidates:
+        return {
+            pid: sorted({
+                resolved for path in paths
+                if (resolved := _valid_rollout_path(path, codex_home)) is not None
+            })
+            for pid, paths in paths_by_pid.items()
+        }
+    return {
+        pid: rollout
+        for pid, paths in paths_by_pid.items()
+        if (rollout := _select_rollout(paths, codex_home)) is not None
+    }
 
 
 # ── Codex rollout parsing ─────────────────────────────────────────────────
@@ -1092,6 +1271,82 @@ def _atomic_write(path, content, owner_pid):
     os.replace(tmp, path)
 
 
+def _codex_selection_path(render_dir, pane_pid):
+    return os.path.join(render_dir, f"pane-{pane_pid}{CODEX_SELECTION_SUFFIX}")
+
+
+def _load_codex_selection(render_dir, pane_pid):
+    """Load a persisted pane/Codex/root identity, rejecting bad sidecars."""
+    try:
+        with open(_codex_selection_path(render_dir, pane_pid), encoding="utf-8") as source:
+            selection = json.load(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(selection, dict):
+        return None
+    if selection.get("pane_pid") != pane_pid:
+        return None
+    if not isinstance(selection.get("codex_pid"), int):
+        return None
+    if not isinstance(selection.get("rollout"), str) or not selection["rollout"]:
+        return None
+    thread_id = selection.get("thread_id")
+    if thread_id is not None and (not isinstance(thread_id, str) or not thread_id):
+        return None
+    return selection
+
+
+def _selection_matches_processes(selection, pane, agent, processes):
+    """Guard sticky state against pane/Codex PID exit and numeric PID reuse."""
+    if not selection or selection.get("pane_pid") != pane["pid"]:
+        return False
+    if selection.get("codex_pid") != agent["pid"]:
+        return False
+    for field, pid in (
+        ("pane_started_at", pane["pid"]),
+        ("codex_started_at", agent["pid"]),
+    ):
+        current = processes.get(pid, {}).get("started_at")
+        if selection.get(field) != current:
+            return False
+    return True
+
+
+def _cache_has_codex_status(render_dir, pane_pid):
+    """A sticky choice is useful only with a last-known-good Codex env cache."""
+    try:
+        with open(
+            os.path.join(render_dir, f"pane-{pane_pid}.env"), encoding="utf-8"
+        ) as source:
+            return any(line.rstrip("\n") == "AGENT_PROVIDER=codex" for line in source)
+    except OSError:
+        return False
+
+
+def _write_codex_selection(render_dir, pane, agent, processes, decision, owner_pid):
+    selection = {
+        "pane_pid": pane["pid"],
+        "pane_started_at": processes.get(pane["pid"], {}).get("started_at"),
+        "codex_pid": agent["pid"],
+        "codex_started_at": processes.get(agent["pid"], {}).get("started_at"),
+        "thread_id": decision.get("thread_id"),
+        "rollout": decision["path"],
+        "activity": decision.get("activity"),
+    }
+    _atomic_write(
+        _codex_selection_path(render_dir, pane["pid"]),
+        json.dumps(selection, sort_keys=True) + "\n",
+        owner_pid,
+    )
+
+
+def _clear_codex_selection(render_dir, pane_pid):
+    try:
+        os.remove(_codex_selection_path(render_dir, pane_pid))
+    except OSError:
+        pass
+
+
 def _prune(render_dir, live_pids):
     """Remove cache files for panes that no longer exist (pid-reuse safety)."""
     try:
@@ -1099,10 +1354,17 @@ def _prune(render_dir, live_pids):
     except OSError:
         return
     for name in names:
-        if not (name.startswith("pane-") and name.endswith(".env")):
+        if not name.startswith("pane-"):
+            continue
+        suffix = next(
+            (candidate for candidate in (".env", CODEX_SELECTION_SUFFIX)
+             if name.endswith(candidate)),
+            None,
+        )
+        if suffix is None:
             continue
         try:
-            pid = int(name[len("pane-"):-len(".env")])
+            pid = int(name[len("pane-"):-len(suffix)])
         except ValueError:
             continue
         if pid not in live_pids:
@@ -1135,9 +1397,10 @@ def render_once(home=None, owner_pid=None):
     selected = []
     for pane in panes:
         selected.append((pane, select_agent_process(pane["pid"], sessions, processes)))
-    codex_rollouts = resolve_codex_rollouts(
+    codex_candidates = resolve_codex_rollouts(
         [agent["pid"] for _, agent in selected if agent and agent["provider"] == "codex"],
         settings["codex_home"],
+        include_candidates=True,
     )
 
     # Pass 2 — adapt the provider's exact local source into one status record.
@@ -1146,16 +1409,39 @@ def render_once(home=None, owner_pid=None):
     codex_statuses = []
     for pane, agent in selected:
         status = None
+        retain_cache = False
+        selection_decision = None
         if agent and agent["provider"] == "claude":
+            _clear_codex_selection(render_dir, pane["pid"])
             status = build_claude_status(agent["session"], home, claude_dir)
             if status is not None:
                 claude_statuses.append(status)
         elif agent and agent["provider"] == "codex":
-            rollout = codex_rollouts.get(agent["pid"])
-            if rollout:
-                status = parse_codex_rollout(rollout)
+            candidates = codex_candidates.get(agent["pid"], [])
+            # Keep compatibility with callers/tests that supplied the old
+            # resolved PID→path shape while candidate mode was introduced.
+            if isinstance(candidates, str):
+                candidates = [candidates]
+            previous = _load_codex_selection(render_dir, pane["pid"])
+            if not (
+                _selection_matches_processes(previous, pane, agent, processes)
+                and _cache_has_codex_status(render_dir, pane["pid"])
+            ):
+                previous = None
+                _clear_codex_selection(render_dir, pane["pid"])
+            selection_decision = _select_rollout_decision(
+                candidates, settings["codex_home"], previous=previous,
+            )
+            if selection_decision["state"] == "retain":
+                retain_cache = True
+            elif selection_decision["state"] == "selected":
+                status = parse_codex_rollout(selection_decision["path"])
                 codex_statuses.append(status)
-        resolved.append((pane, status))
+            else:
+                _clear_codex_selection(render_dir, pane["pid"])
+        else:
+            _clear_codex_selection(render_dir, pane["pid"])
+        resolved.append((pane, status, retain_cache, agent, selection_decision))
 
     # Claude quota remains global and uses only the existing Claude quota server.
     # Codex quota is already local to each rollout and never traverses that path.
@@ -1171,8 +1457,12 @@ def render_once(home=None, owner_pid=None):
 
     # Pass 3 — pure assembly + atomic write.
     live_pids = set()
-    for pane, status in resolved:
+    for pane, status, retain_cache, agent, selection_decision in resolved:
         live_pids.add(pane["pid"])
+        if retain_cache:
+            # Do not advance RENDER_TS: readers keep showing the last proven
+            # agent record with their normal visible staleness marker.
+            continue
         lines = []
         if status is not None:
             lines.extend(agent_env_lines(status))
@@ -1185,6 +1475,22 @@ def render_once(home=None, owner_pid=None):
             )
         except OSError:
             logger.exception("Failed writing cache for pane %s", pane["pid"])
+        else:
+            if (
+                agent and agent["provider"] == "codex"
+                and selection_decision
+                and selection_decision["state"] == "selected"
+            ):
+                try:
+                    _write_codex_selection(
+                        render_dir, pane, agent, processes, selection_decision, owner_pid,
+                    )
+                except OSError:
+                    logger.exception(
+                        "Failed writing Codex selection for pane %s", pane["pid"]
+                    )
+            else:
+                _clear_codex_selection(render_dir, pane["pid"])
 
     _prune(render_dir, live_pids)
     return len(panes)

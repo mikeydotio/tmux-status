@@ -31,6 +31,11 @@ def _write(path, text):
         f.write(text)
 
 
+def _append_json(path, record):
+    with open(path, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
 # ── Process map / ancestor walk ────────────────────────────────────────────
 class TestParsePsOutput(unittest.TestCase):
     def test_parses_pid_ppid(self):
@@ -148,6 +153,22 @@ class TestCodexRolloutResolution(unittest.TestCase):
         _write(path, "{}\n")
         return path
 
+    def _session_rollout(self, name, thread_id, parent_id=None):
+        path = os.path.join(self.sessions, name)
+        payload = {"id": thread_id}
+        if parent_id is not None:
+            payload["parent_thread_id"] = parent_id
+        _write(path, json.dumps({"type": "session_meta", "payload": payload}) + "\n")
+        return path
+
+    @staticmethod
+    def _activity(path, timestamp):
+        _append_json(path, {
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {"type": "task_started"},
+        })
+
     def test_linux_resolves_one_exact_open_rollout(self):
         rollout = self._rollout("rollout-one.jsonl")
         proc_root = os.path.join(self.tmp, "proc")
@@ -171,6 +192,117 @@ class TestCodexRolloutResolution(unittest.TestCase):
             [123], self.codex_home, system_name="Linux", proc_root=proc_root,
         )
         self.assertEqual(resolved, {})
+
+    def test_linux_selects_primary_with_open_subagent_rollout(self):
+        root = self._session_rollout("rollout-root.jsonl", "root")
+        child = self._session_rollout("rollout-child.jsonl", "child", "root")
+        proc_root = os.path.join(self.tmp, "proc")
+        fd_dir = os.path.join(proc_root, "123", "fd")
+        os.makedirs(fd_dir)
+        os.symlink(root, os.path.join(fd_dir, "7"))
+        os.symlink(child, os.path.join(fd_dir, "8"))
+        resolved = render.resolve_codex_rollouts(
+            [123], self.codex_home, system_name="Linux", proc_root=proc_root,
+        )
+        self.assertEqual(resolved, {123: os.path.realpath(root)})
+
+    def test_multiple_rollouts_with_unproven_parent_fail_safe(self):
+        root = self._session_rollout("rollout-root.jsonl", "root")
+        child = self._session_rollout("rollout-child.jsonl", "child", "missing")
+        output = f"p123\nn{root}\nn{child}\n"
+        self.assertEqual(
+            render._parse_lsof_rollouts(output, [123], self.codex_home), {}
+        )
+
+    def test_multiple_root_rollouts_fail_safe(self):
+        one = self._session_rollout("rollout-one.jsonl", "one")
+        two = self._session_rollout("rollout-two.jsonl", "two")
+        output = f"p123\nn{one}\nn{two}\n"
+        self.assertEqual(
+            render._parse_lsof_rollouts(output, [123], self.codex_home), {}
+        )
+
+    def test_completed_old_root_yields_to_newer_active_root(self):
+        old = self._session_rollout("rollout-old.jsonl", "old")
+        new = self._session_rollout("rollout-new.jsonl", "new")
+        self._activity(old, "2026-08-23T22:21:46Z")
+        self._activity(new, "2026-08-23T22:22:18Z")
+        decision = render._select_rollout_decision(
+            [old, new], self.codex_home,
+        )
+        self.assertEqual(decision["state"], "selected")
+        self.assertEqual(decision["path"], os.path.realpath(new))
+
+    def test_resumed_older_root_wins_on_newer_root_event(self):
+        old = self._session_rollout("rollout-old.jsonl", "old")
+        new = self._session_rollout("rollout-new.jsonl", "new")
+        self._activity(old, "2026-08-23T22:21:46Z")
+        self._activity(new, "2026-08-23T22:22:18Z")
+        first = render._select_rollout_decision([old, new], self.codex_home)
+        self._activity(old, "2026-08-23T22:23:00Z")
+        resumed = render._select_rollout_decision(
+            [old, new], self.codex_home,
+            previous={
+                "rollout": first["path"],
+                "thread_id": first["thread_id"],
+                "activity": first["activity"],
+            },
+        )
+        self.assertEqual(resumed["state"], "selected")
+        self.assertEqual(resumed["path"], os.path.realpath(old))
+
+    def test_child_only_activity_does_not_steal_root_selection(self):
+        first = self._session_rollout("rollout-first.jsonl", "first")
+        child = self._session_rollout("rollout-child.jsonl", "child", "first")
+        second = self._session_rollout("rollout-second.jsonl", "second")
+        self._activity(first, "2026-08-23T22:21:00Z")
+        self._activity(child, "2026-08-23T23:00:00Z")
+        self._activity(second, "2026-08-23T22:22:00Z")
+        decision = render._select_rollout_decision(
+            [first, child, second], self.codex_home,
+        )
+        self.assertEqual(decision["path"], os.path.realpath(second))
+
+    def test_equal_root_activity_retains_last_known_good(self):
+        one = self._session_rollout("rollout-one.jsonl", "one")
+        two = self._session_rollout("rollout-two.jsonl", "two")
+        self._activity(one, "2026-08-23T22:21:00Z")
+        self._activity(two, "2026-08-23T22:21:00Z")
+        previous = {"rollout": one, "thread_id": "one", "activity": 1}
+        decision = render._select_rollout_decision(
+            [one, two], self.codex_home, previous=previous,
+        )
+        self.assertEqual(decision["state"], "retain")
+        self.assertEqual(decision["path"], os.path.realpath(one))
+
+    def test_malformed_graph_retains_last_known_good(self):
+        root = self._session_rollout("rollout-root.jsonl", "root")
+        malformed = self._rollout("rollout-malformed.jsonl")
+        decision = render._select_rollout_decision(
+            [root, malformed], self.codex_home,
+            previous={"rollout": root, "thread_id": "root", "activity": 1},
+        )
+        self.assertEqual(decision["state"], "retain")
+        self.assertEqual(decision["path"], os.path.realpath(root))
+
+    def test_equal_root_activity_without_previous_fails_closed(self):
+        one = self._session_rollout("rollout-one.jsonl", "one")
+        two = self._session_rollout("rollout-two.jsonl", "two")
+        self._activity(one, "2026-08-23T22:21:00Z")
+        self._activity(two, "2026-08-23T22:21:00Z")
+        decision = render._select_rollout_decision([one, two], self.codex_home)
+        self.assertEqual(decision["state"], "none")
+        self.assertIsNone(decision["path"])
+
+    def test_missing_selected_rollout_resets_to_exact_open_root(self):
+        old = self._session_rollout("rollout-old.jsonl", "old")
+        current = self._session_rollout("rollout-current.jsonl", "current")
+        decision = render._select_rollout_decision(
+            [current], self.codex_home,
+            previous={"rollout": old, "thread_id": "old", "activity": 100},
+        )
+        self.assertEqual(decision["state"], "selected")
+        self.assertEqual(decision["path"], os.path.realpath(current))
 
     def test_linux_does_not_accept_jsonl_outside_codex_sessions(self):
         outside = os.path.join(self.tmp, "other.jsonl")
@@ -756,10 +888,12 @@ class TestCacheAndRenderOnce(unittest.TestCase):
     def test_prune_removes_dead_panes(self):
         _write(os.path.join(self.render_dir, "pane-100.env"), "GIT_LINE=x\n")
         _write(os.path.join(self.render_dir, "pane-200.env"), "GIT_LINE=y\n")
+        _write(os.path.join(self.render_dir, "pane-200.codex.json"), "{}\n")
         render._prune(self.render_dir, {100})
         names = set(os.listdir(self.render_dir))
         self.assertIn("pane-100.env", names)
         self.assertNotIn("pane-200.env", names)
+        self.assertNotIn("pane-200.codex.json", names)
 
     def test_render_once_no_tmux_returns_zero(self):
         with mock.patch.object(render, "enumerate_panes", return_value=[]):
@@ -792,6 +926,44 @@ class TestCacheAndRenderOnce(unittest.TestCase):
              }), \
              mock.patch.object(render, "load_sessions", return_value=sessions):
             return render.render_once(home=home)
+
+    def _codex_rollout(self, name, thread_id, activity, model):
+        path = os.path.join(
+            self.tmp, ".codex", "sessions", "2026", "08", "23", name,
+        )
+        records = [
+            {"timestamp": activity, "type": "session_meta",
+             "payload": {"id": thread_id}},
+            {"timestamp": activity, "type": "turn_context", "payload": {
+                "model": model, "effort": "xhigh"}},
+            {"timestamp": activity, "type": "event_msg", "payload": {
+                "type": "task_started", "model_context_window": 100}},
+            {"timestamp": activity, "type": "event_msg", "payload": {
+                "type": "token_count", "info": {"last_token_usage": {
+                    "total_tokens": 25}}, "rate_limits": {}}},
+        ]
+        _write(path, "\n".join(json.dumps(record) for record in records) + "\n")
+        return path
+
+    def _render_codex(
+        self, candidates, pane_pid=4247, codex_pid=6002,
+        pane_started=1, codex_started=2, now=100,
+    ):
+        processes = {
+            pane_pid: {"pid": pane_pid, "ppid": 1, "command": "zsh",
+                       "started_at": pane_started},
+            codex_pid: {"pid": codex_pid, "ppid": pane_pid, "command": "codex",
+                        "started_at": codex_started},
+        }
+        with mock.patch.object(render, "enumerate_panes", return_value=[
+                 {"pid": pane_pid, "path": "/var/empty"}]), \
+             mock.patch.object(render, "build_process_snapshot", return_value=processes), \
+             mock.patch.object(render, "load_sessions", return_value=[]), \
+             mock.patch.object(render, "resolve_codex_rollouts", return_value={
+                 codex_pid: candidates}), \
+             mock.patch.object(render.time, "time", return_value=now):
+            render.render_once(home=self.tmp)
+        return os.path.join(self.render_dir, f"pane-{pane_pid}.env")
 
     def test_render_once_model_from_bridge_when_transcript_has_no_assistant(self):
         # The /clear bug: the new transcript exists but has no assistant message
@@ -902,6 +1074,82 @@ class TestCacheAndRenderOnce(unittest.TestCase):
             content = f.read()
         self.assertNotIn("AGENT_PROVIDER=", content)
         self.assertIn("GIT_LINE=", content)
+
+    def test_daemon_restart_restores_sticky_selection_from_sidecar(self):
+        first = self._codex_rollout(
+            "rollout-first.jsonl", "first", 20, "gpt-5.6-sol",
+        )
+        second = self._codex_rollout(
+            "rollout-second.jsonl", "second", 10, "gpt-5.6-terra",
+        )
+        env_path = self._render_codex([first, second], now=100)
+        with open(env_path) as source:
+            original = source.read()
+        self.assertIn("AGENT_MODEL=gpt-5.6-sol", original)
+        sidecar = render._load_codex_selection(self.render_dir, 4247)
+        self.assertEqual(sidecar["thread_id"], "first")
+
+        # A new daemon has no in-memory state. Equal root activity can only
+        # retain the first choice by loading the on-disk pane/Codex identity.
+        _append_json(second, {
+            "timestamp": 20,
+            "type": "event_msg",
+            "payload": {"type": "task_started"},
+        })
+        self._render_codex([first, second], now=200)
+        with open(env_path) as source:
+            restarted = source.read()
+        self.assertEqual(restarted, original)
+        self.assertIn("RENDER_TS=100", restarted)
+
+    def test_malformed_evidence_keeps_last_known_agent_cache_stale(self):
+        root = self._codex_rollout(
+            "rollout-root.jsonl", "root", 20, "gpt-5.6-sol",
+        )
+        malformed = os.path.join(os.path.dirname(root), "rollout-malformed.jsonl")
+        _write(malformed, "{}\n")
+        env_path = self._render_codex([root], now=100)
+        with open(env_path) as source:
+            original = source.read()
+        self._render_codex([root, malformed], now=200)
+        with open(env_path) as source:
+            retained = source.read()
+        self.assertEqual(retained, original)
+        self.assertIn("AGENT_PROVIDER=codex", retained)
+        self.assertIn("RENDER_TS=100", retained)
+
+    def test_codex_pid_change_clears_sticky_selection_on_ambiguity(self):
+        first = self._codex_rollout(
+            "rollout-first.jsonl", "first", 20, "gpt-5.6-sol",
+        )
+        second = self._codex_rollout(
+            "rollout-second.jsonl", "second", 20, "gpt-5.6-terra",
+        )
+        env_path = self._render_codex([first], codex_pid=6002, now=100)
+        self._render_codex([first, second], codex_pid=6003, now=200)
+        with open(env_path) as source:
+            reset = source.read()
+        self.assertNotIn("AGENT_PROVIDER=", reset)
+        self.assertIn("RENDER_TS=200", reset)
+        self.assertFalse(os.path.exists(
+            render._codex_selection_path(self.render_dir, 4247)
+        ))
+
+    def test_pane_pid_reuse_clears_sticky_selection_on_ambiguity(self):
+        first = self._codex_rollout(
+            "rollout-first.jsonl", "first", 20, "gpt-5.6-sol",
+        )
+        second = self._codex_rollout(
+            "rollout-second.jsonl", "second", 20, "gpt-5.6-terra",
+        )
+        env_path = self._render_codex([first], pane_started=1, now=100)
+        self._render_codex(
+            [first, second], pane_started=3, codex_started=2, now=200,
+        )
+        with open(env_path) as source:
+            reset = source.read()
+        self.assertNotIn("AGENT_PROVIDER=", reset)
+        self.assertIn("RENDER_TS=200", reset)
 
 
 # ── PATH hardening (launchd/systemd minimal PATH) ──────────────────────────
