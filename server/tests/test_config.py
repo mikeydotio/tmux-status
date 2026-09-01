@@ -23,13 +23,29 @@ class TestParseArgs(unittest.TestCase):
         self.assertEqual(args.log_level, "INFO")
         self.assertIsNone(args.api_key_file)
 
-    def test_key_file_default_with_tilde_expansion(self):
-        """--key-file default expands ~ to the home directory."""
+    def test_usage_socket_default(self):
+        """--usage-socket defaults to the dedicated capture socket."""
         args = parse_args([])
-        home = os.path.expanduser("~")
-        expected = os.path.join(home, ".config", "tmux-status", "claude-usage-key.json")
-        self.assertEqual(args.key_file, expected)
-        self.assertNotIn("~", args.key_file)
+        self.assertEqual(args.usage_socket, "tmux-status-usage")
+
+    def test_usage_socket_must_not_be_the_default_server(self):
+        """Isolation invariant: the capture must never use tmux's default server."""
+        with self.assertRaises(SystemExit):
+            parse_args(["--usage-socket", "default"])
+
+    def test_usage_cwd_defaults_to_none(self):
+        """--usage-cwd is unset by default."""
+        self.assertIsNone(parse_args([]).usage_cwd)
+
+    def test_usage_cwd_tilde_expansion(self):
+        """--usage-cwd expands a leading tilde."""
+        args = parse_args(["--usage-cwd", "~/projects"])
+        self.assertEqual(args.usage_cwd, os.path.join(os.path.expanduser("~"), "projects"))
+
+    def test_boot_timeout_default(self):
+        """--boot-timeout has a default generous enough for CLI startup."""
+        self.assertGreaterEqual(parse_args([]).boot_timeout, 30.0)
+
 
     def test_custom_host(self):
         """--host overrides the default."""
@@ -46,16 +62,7 @@ class TestParseArgs(unittest.TestCase):
         args = parse_args(["--port", "8080"])
         self.assertIsInstance(args.port, int)
 
-    def test_custom_key_file(self):
-        """--key-file overrides the default."""
-        args = parse_args(["--key-file", "/tmp/my-key.json"])
-        self.assertEqual(args.key_file, "/tmp/my-key.json")
 
-    def test_key_file_tilde_expansion(self):
-        """--key-file expands ~ in user-provided paths."""
-        args = parse_args(["--key-file", "~/my-key.json"])
-        home = os.path.expanduser("~")
-        self.assertEqual(args.key_file, os.path.join(home, "my-key.json"))
 
     def test_api_key_file_optional(self):
         """--api-key-file defaults to None."""
@@ -98,14 +105,14 @@ class TestParseArgs(unittest.TestCase):
         args = parse_args([
             "--host", "0.0.0.0",
             "--port", "9999",
-            "--key-file", "/etc/key.json",
+            "--usage-socket", "custom-sock",
             "--api-key-file", "/etc/api.key",
             "--interval", "60",
             "--log-level", "DEBUG",
         ])
         self.assertEqual(args.host, "0.0.0.0")
         self.assertEqual(args.port, 9999)
-        self.assertEqual(args.key_file, "/etc/key.json")
+        self.assertEqual(args.usage_socket, "custom-sock")
         self.assertEqual(args.api_key_file, "/etc/api.key")
         self.assertEqual(args.interval, 60)
         self.assertEqual(args.log_level, "DEBUG")

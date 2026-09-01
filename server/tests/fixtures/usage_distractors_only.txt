@@ -1,0 +1,8 @@
+Settings  Status   Config   Usage   Stats
+What's contributing to your limits usage?
+89% of your usage was at >150k context
+82% of your usage came from subagent-heavy sessions
+Skills                  % of usage
+/reconcile-pr:reconcile-pr      7%
+Subagents               % of usage
+Explore                         5%

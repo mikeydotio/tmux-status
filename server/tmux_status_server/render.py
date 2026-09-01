@@ -994,17 +994,6 @@ def fmt_remain(iso_str, status, full_label):
     return "X"
 
 
-def _key_expiry_warn(key_expires_at):
-    """True when the session key expires within 24h."""
-    if key_expires_at:
-        try:
-            exp = datetime.fromisoformat(key_expires_at.replace("Z", "+00:00"))
-            return (exp - datetime.now(timezone.utc)).total_seconds() < 86400
-        except Exception:
-            pass
-    return False
-
-
 def compute_quota_vars(settings, home):
     """Fetch+parse quota into the status variables (global; same for all panes)."""
     quota_bridge = settings["quota_bridge"]
@@ -1020,7 +1009,6 @@ def compute_quota_vars(settings, home):
     five_hour_reset = ""
     seven_day_pct = 0
     seven_day_reset = ""
-    key_expires_at = ""
 
     if quota_bridge:
         qd = None
@@ -1037,7 +1025,6 @@ def compute_quota_vars(settings, home):
             seven_day_pct = "X"
         else:
             quota_status = qd.get("status", "none")
-            key_expires_at = qd.get("expires_at", "")
             if quota_status == "ok":
                 fh = qd.get("five_hour", {})
                 fh_util = fh.get("utilization", 0)
@@ -1074,7 +1061,6 @@ def compute_quota_vars(settings, home):
         "seven_day_pct": seven_day_pct,
         "five_hour_remain": fmt_remain(five_hour_reset, quota_status, "5h"),
         "seven_day_remain": fmt_remain(seven_day_reset, quota_status, "7d"),
-        "key_expiry_warn": _key_expiry_warn(key_expires_at),
     }
 
 
@@ -1191,7 +1177,9 @@ def build_claude_status(session, home, claude_dir):
 def attach_claude_quota(status, quota_vars):
     """Attach Claude's existing global quota values as normalized slots."""
     status["quota_status"] = quota_vars["quota_status"]
-    status["quota_warn"] = quota_vars["key_expiry_warn"]
+    # No credential to expire now that usage comes from the CLI; the shared
+    # quota_warn field stays for the Codex path, which sets it from its own data.
+    status["quota_warn"] = False
     if quota_vars["quota_status"] not in ("none", "no_key"):
         status["quota_slots"] = [
             {

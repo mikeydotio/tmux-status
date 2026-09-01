@@ -134,9 +134,9 @@ class TestPyprojectToml(unittest.TestCase):
         """pyproject.toml declares bottle>=0.12.25 dependency."""
         self.assertIn('"bottle>=0.12.25"', self.content)
 
-    def test_curl_cffi_dependency(self):
-        """pyproject.toml declares curl_cffi>=0.5 dependency."""
-        self.assertIn('"curl_cffi>=0.5"', self.content)
+    def test_no_curl_cffi_dependency(self):
+        """curl_cffi is gone: usage now comes from the CLI, not HTTP scraping."""
+        self.assertNotIn("curl_cffi", self.content)
 
     def test_console_script_entry_point(self):
         """pyproject.toml declares tmux-status-server console script."""

@@ -1,0 +1,8 @@
+Settings  Status   Config   Usage   Stats
+Current session
+100% 100% used
+Resets 3:50pm (America/Los_Angeles)
+Current week (all models)
+100% 100% used
+Current week (Fable)
+0% 0% used

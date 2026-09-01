@@ -21,3 +21,4 @@ server/build/
 # They show up as gitlinks (mode 160000) if accidentally staged, which
 # produces "No url found for submodule path" warnings in CI checkout.
 .claude/worktrees/
+.claude/dispatch-sentinel.json

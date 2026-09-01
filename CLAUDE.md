@@ -10,7 +10,7 @@ A 3-line tmux status bar for Claude Code developers. Displays Claude session met
 
 The project is a collection of shell (bash), Python 3, and Node.js scripts installed via symlinks, plus a Python `server/` package (quota server + render daemon).
 
-**Tests:** `make test` is the green gate (bash syntax + model unit tests + render-daemon unit tests + render pipeline integration). Per project policy the suite runs locally, not in GitHub Actions. `make test-server` runs the full `server/tests` suite (needs extra deps: `webtest`, `bottle`, `curl_cffi`).
+**Tests:** `make test` is the green gate (bash syntax + model unit tests + render-daemon unit tests + render pipeline integration). Per project policy the suite runs locally, not in GitHub Actions. `make test-server` runs the full `server/tests` suite (needs extra deps: `webtest`, `bottle`).
 
 **Install locally:** `./install.sh` — symlinks scripts to `~/.local/bin/`, creates config at `~/.config/tmux-status/`, adds one `source-file` line to tmux.conf, configures the Claude Code statusLine hook.
 
@@ -52,8 +52,19 @@ The fork-free refactor moved heavy work off the render path, but tmux still spaw
 
 ### Quota Fetching (HTTP server + client)
 
-- **`server/tmux_status_server/`** (Python package) — HTTP server that scrapes claude.ai for quota data using `curl_cffi` (Chrome TLS fingerprint). Runs a background poll thread at a configurable interval (default 300s). Serves `/quota` and `/health` endpoints. Supports optional API key auth via `--api-key-file`. Installed as `tmux-status-server` entry point. Runs as a systemd user unit (Linux) or launchd agent (macOS), bound to `127.0.0.1:7850` by default.
+- **`server/tmux_status_server/cli_usage.py`** (Python) — The usage collector. Boots the `claude` CLI headless in a **dedicated tmux socket**, sends `/usage`, captures the pane, and parses the three usage windows (`Current session` → `five_hour`, `Current week (all models)` → `seven_day`, `Current week (<model>)` → `model_week`, stored but not rendered). Uses `--ax-screen-reader`, which renders flat labelled text instead of the boxed TUI and is far more stable to parse. `UsageScreenParser` is pure (`str -> ParsedUsage`), so all parsing is tested offline against golden fixtures in `server/tests/fixtures/`. Reset times arrive as human strings (`3:50pm`, `Sep 3 at 9am`) and are resolved to the next future occurrence as **ISO 8601**, which is what `render.py`'s `fmt_reset()` parses. Failures return a bridge with `status: "error"` and a specific code (`cli_not_found`, `cli_boot_timeout`, `cli_not_authenticated`, `usage_screen_timeout`, `usage_parse_failed`, `tmux_unavailable`, `collector_crashed`), so a future CLI layout change is diagnosable from logs.
+- **`server/tmux_status_server/`** (Python package) — HTTP server that runs the collector on a background poll thread at a configurable interval (default 300s). Serves `/quota` and `/health` endpoints. Supports optional API key auth via `--api-key-file`. Installed as `tmux-status-server` entry point. Runs as a systemd user unit (Linux) or launchd agent (macOS), bound to `127.0.0.1:7850` by default.
 - **Client fetch in `render.py`** — The render daemon's `_maybe_fetch_quota()` fetches from `QUOTA_SOURCE` (default `http://127.0.0.1:7850`) once per tick, validates JSON, and writes an atomic disk cache at `~/.cache/tmux-status/claude-quota.json`. Supports `QUOTA_API_KEY` header and `QUOTA_CACHE_TTL` for remote servers. Falls back to stale cache on failure. (This logic moved out of `tmux-claude-status` when it became a thin reader.)
+
+**No credential is involved.** Usage is read from the already-authenticated CLI. The former claude.ai session key (`claude-usage-key.json`) and the `curl_cffi` scraper were removed: the key was revoked server-side on any browser logout or re-auth while `expiresAt` still claimed weeks of validity, which surfaced as `403 account_session_invalid` and an `X` in the status bar.
+
+### Usage-capture isolation invariant (do not break)
+
+The headless capture session MUST run on a **dedicated tmux socket** (`tmux -L tmux-status-usage`), never the user's default server. On the default server it would (a) be enumerated by `render.py`'s `tmux list-panes -a` and get a bogus `pane-<pid>.env`, (b) consume tmux-server fds against the 256 soft limit documented above, and (c) be detached and transport-reaped by `tmux-status-prune-clients`. `config.py` rejects `--usage-socket default` to enforce this at the CLI boundary.
+
+Two further contracts in `cli_usage.py`:
+- **Geometry is fixed at 120x45.** Wrapping width decides where lines break, and therefore whether the golden fixtures still match.
+- **Readiness is keyed on the input-mode footer (`shift+tab`), never the startup banner.** Measured: the banner paints ~3s before the input box accepts keystrokes, and keys sent in that window are silently dropped. The transient `effort:` hint is also unusable — it clears after ~10s.
 
 ### Session Launcher (optional)
 
@@ -65,7 +76,6 @@ The fork-free refactor moved heavy work off the render path, but tmux still spaw
 |------|---------|
 | `~/.config/tmux-status/settings.conf` | User settings (clock, banner, quota source) |
 | `~/.config/tmux-status/windows.json` | Session launcher config |
-| `~/.config/tmux-status/claude-usage-key.json` | Session key for quota API |
 | `~/.cache/tmux-status/claude-ctx-*.json` | Context/effort bridge files (`used_pct`, `model`, live `effort`/`thinking` — written by hook) |
 | `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by renderer from server response) |
 | `~/.cache/tmux-status/render/pane-<pid>.env` | Per-pane render cache (written by the daemon, sourced by the thin readers) |

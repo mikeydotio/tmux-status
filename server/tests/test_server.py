@@ -16,6 +16,8 @@ from unittest import mock
 # Add server directory to path so we can import the module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from tmux_status_server.cli_usage import error_bridge  # noqa: E402
+
 
 SERVER_PATH = os.path.join(
     os.path.dirname(__file__), "..", "tmux_status_server", "server.py"
@@ -84,13 +86,38 @@ def _make_server(**overrides):
         defaults = {
             "host": "127.0.0.1",
             "port": 7850,
-            "key_file": "/tmp/k.json",
             "api_key_file": None,
             "interval": 300,
         }
         defaults.update(overrides)
         server = QuotaServer(**defaults)
         return server, routes, hooks, errors, mock_bottle
+
+
+class _StubCollector:
+    """A UsageCollector stand-in: returns a fixed bridge, or raises."""
+
+    def __init__(self, result=None, exc=None):
+        self.result = result
+        self.exc = exc
+        self.calls = 0
+
+    def collect(self):
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+def _ok_bridge():
+    """A minimal successful quota bridge."""
+    return {
+        "status": "ok",
+        "five_hour": {"utilization": 42, "resets_at": None},
+        "seven_day": {"utilization": 15, "resets_at": None},
+        "model_week": None,
+        "timestamp": 1000,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +254,16 @@ class TestServerModuleStructure(unittest.TestCase):
                         found = True
         self.assertTrue(found, "server.py does not import __version__")
 
-    def test_imports_scraper_functions(self):
-        """server.py imports fetch_quota, read_session_key, _error_bridge from scraper."""
-        scraper_imports = []
+    def test_imports_collector(self):
+        """server.py imports the CLI usage collector, not the removed scraper."""
+        collector_imports = []
         for node in ast.walk(self.tree):
             if isinstance(node, ast.ImportFrom):
-                if node.module and "scraper" in node.module:
-                    scraper_imports.extend(alias.name for alias in node.names)
-        self.assertIn("fetch_quota", scraper_imports)
-        self.assertIn("read_session_key", scraper_imports)
-        self.assertIn("_error_bridge", scraper_imports)
+                if node.module and "cli_usage" in node.module:
+                    collector_imports.extend(alias.name for alias in node.names)
+                self.assertNotIn("scraper", node.module or "")
+        self.assertIn("CliUsageCollector", collector_imports)
+        self.assertIn("error_bridge", collector_imports)
 
     def test_no_threading_lock(self):
         """server.py uses reference swap, not threading.Lock."""
@@ -326,7 +353,6 @@ class TestQuotaServerInit(unittest.TestCase):
         server, routes, hooks, errors, mb = _make_server()
         self.assertEqual(server.host, "127.0.0.1")
         self.assertEqual(server.port, 7850)
-        self.assertEqual(server.key_file, "/tmp/k.json")
         self.assertIsNone(server.api_key_file)
         self.assertEqual(server.interval, 300)
 
@@ -334,7 +360,7 @@ class TestQuotaServerInit(unittest.TestCase):
         """Constructor sets default internal state."""
         server, _, _, _, _ = _make_server()
         self.assertIsNone(server._cached_data)
-        self.assertFalse(server._last_scrape_ok)
+        self.assertFalse(server._last_collect_ok)
 
     def test_app_is_created(self):
         """Constructor creates a Bottle app."""
@@ -461,20 +487,20 @@ class TestHealthEndpoint(unittest.TestCase):
         self.assertIn("uptime_seconds", result)
         self.assertEqual(result["version"], "0.1.0")
 
-    def test_returns_ok_when_data_and_scrape_ok(self):
-        """GET /health returns 'ok' when data cached and last scrape succeeded."""
+    def test_returns_ok_when_data_and_collect_ok(self):
+        """GET /health returns 'ok' when data cached and last collection succeeded."""
         server, routes, hooks, errors, mb = _make_server()
         server._cached_data = {"status": "ok"}
-        server._last_scrape_ok = True
+        server._last_collect_ok = True
         result_json = routes["/health"]()
         result = json.loads(result_json)
         self.assertEqual(result["status"], "ok")
 
-    def test_returns_degraded_when_data_but_last_scrape_failed(self):
-        """GET /health returns 'degraded' when cached data but last scrape failed."""
+    def test_returns_degraded_when_data_but_last_collect_failed(self):
+        """GET /health returns 'degraded' when cached data but last collection failed."""
         server, routes, hooks, errors, mb = _make_server()
         server._cached_data = {"status": "upstream_error"}
-        server._last_scrape_ok = False
+        server._last_collect_ok = False
         result_json = routes["/health"]()
         result = json.loads(result_json)
         self.assertEqual(result["status"], "degraded")
@@ -582,107 +608,77 @@ class TestAuthHook(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBackgroundPollThread(unittest.TestCase):
-    """Test the background scraper poll thread behavior."""
+    """Test the background collection poll thread behavior."""
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_first_scrape_happens_immediately(self, mock_fetch, mock_read_key):
-        """The poll loop performs first scrape immediately on startup."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = ({
-            "status": "ok",
-            "five_hour": {"utilization": 42, "resets_at": None},
-            "seven_day": {"utilization": 15, "resets_at": None},
-            "timestamp": 1000,
-        }, "org-123")
-        server._do_scrape()
-        mock_read_key.assert_called_once_with("/tmp/k.json")
-        mock_fetch.assert_called_once_with("sk-test", None)
+    def test_first_collect_happens_immediately(self):
+        """The poll loop performs the first collection immediately on startup."""
+        server, _, _, _, _ = _make_server(collector=_StubCollector(_ok_bridge()))
+        server._do_collect()
+        self.assertEqual(server.collector.calls, 1)
         self.assertIsNotNone(server._cached_data)
-        self.assertTrue(server._last_scrape_ok)
+        self.assertTrue(server._last_collect_ok)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_rereads_session_key_each_cycle(self, mock_fetch, mock_read_key):
-        """Session key is re-read from disk on every scrape cycle."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
-        server._do_scrape()
-        server._do_scrape()
-        server._do_scrape()
-        self.assertEqual(mock_read_key.call_count, 3)
+    def test_collects_each_cycle(self):
+        """The collector is invoked once per cycle."""
+        server, _, _, _, _ = _make_server(collector=_StubCollector(_ok_bridge()))
+        server._do_collect()
+        server._do_collect()
+        server._do_collect()
+        self.assertEqual(server.collector.calls, 3)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    def test_handles_key_error(self, mock_read_key):
-        """Scrape handles session key read errors gracefully."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"error": "no_key"}
-        server._do_scrape()
-        self.assertIsNotNone(server._cached_data)
-        self.assertEqual(server._cached_data["status"], "no_key")
-        self.assertEqual(server._cached_data["error"], "no_key")
-        self.assertFalse(server._last_scrape_ok)
+    def test_handles_collector_error_bridge(self):
+        """A collector error bridge is cached and marks the cycle failed."""
+        server, _, _, _, _ = _make_server(
+            collector=_StubCollector(error_bridge("cli_not_found"))
+        )
+        server._do_collect()
+        self.assertEqual(server._cached_data["status"], "error")
+        self.assertEqual(server._cached_data["error"], "cli_not_found")
+        self.assertFalse(server._last_collect_ok)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_handles_fetch_exception(self, mock_fetch, mock_read_key):
-        """Scrape catches exceptions from fetch_quota and sets error state."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.side_effect = Exception("unexpected")
-        server._do_scrape()
-        self.assertIsNotNone(server._cached_data)
-        self.assertEqual(server._cached_data["status"], "upstream_error")
-        self.assertFalse(server._last_scrape_ok)
+    def test_handles_collector_exception(self):
+        """A collector that raises is contained, not allowed to kill the thread."""
+        server, _, _, _, _ = _make_server(
+            collector=_StubCollector(exc=Exception("unexpected"))
+        )
+        server._do_collect()
+        self.assertEqual(server._cached_data["status"], "error")
+        self.assertEqual(server._cached_data["error"], "collector_crashed")
+        self.assertFalse(server._last_collect_ok)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_sets_last_scrape_ok_false_on_error_status(self, mock_fetch, mock_read_key):
-        """When fetch_quota returns non-ok status, _last_scrape_ok is False."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = ({
-            "status": "session_key_expired",
-            "error": "session_key_expired",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 1000,
-        }, None)
-        server._do_scrape()
-        self.assertFalse(server._last_scrape_ok)
+    def test_sets_last_collect_ok_false_on_error_status(self):
+        """A non-ok status leaves _last_collect_ok False."""
+        server, _, _, _, _ = _make_server(
+            collector=_StubCollector(error_bridge("usage_parse_failed"))
+        )
+        server._do_collect()
+        self.assertFalse(server._last_collect_ok)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_poll_loop_immediate_scrape_then_shutdown(self, mock_fetch, mock_read_key):
-        """Poll loop scrapes immediately, then exits on shutdown."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
-
-        original_do_scrape = server._do_scrape
+    def test_poll_loop_immediate_collect_then_shutdown(self):
+        """Poll loop collects immediately, then exits on shutdown."""
+        server, _, _, _, _ = _make_server(collector=_StubCollector(_ok_bridge()))
+        original = server._do_collect
         call_count = [0]
 
-        def counting_scrape():
-            original_do_scrape()
+        def counting():
+            original()
             call_count[0] += 1
             if call_count[0] >= 1:
                 server._shutdown.set()
                 server._wake.set()
 
-        server._do_scrape = counting_scrape
+        server._do_collect = counting
         server._poll_loop()
         self.assertGreaterEqual(call_count[0], 1)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_error_bridge_no_raw_exception(self, mock_fetch, mock_read_key):
+    def test_error_bridge_no_raw_exception(self):
         """Error responses never contain raw exception text."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.side_effect = RuntimeError("connection to database failed at 0xDEADBEEF")
-        server._do_scrape()
+        server, _, _, _, _ = _make_server(
+            collector=_StubCollector(
+                exc=RuntimeError("connection to database failed at 0xDEADBEEF")
+            )
+        )
+        server._do_collect()
         result_str = json.dumps(server._cached_data)
         self.assertNotIn("connection to database", result_str)
         self.assertNotIn("0xDEADBEEF", result_str)
@@ -858,13 +854,12 @@ class TestMainFunction(unittest.TestCase):
                 tmux_status_server.server.main()
                 mock_parse.assert_called_once()
                 mock_warn.assert_called_once_with(mock_args)
-                MockServer.assert_called_once_with(
-                    host="127.0.0.1",
-                    port=7850,
-                    key_file="/tmp/k.json",
-                    api_key_file=None,
-                    interval=300,
-                )
+                kwargs = MockServer.call_args.kwargs
+                self.assertEqual(kwargs["host"], "127.0.0.1")
+                self.assertEqual(kwargs["port"], 7850)
+                self.assertIsNone(kwargs["api_key_file"])
+                self.assertEqual(kwargs["interval"], 300)
+                self.assertIsNotNone(kwargs["collector"])
                 MockServer.return_value.run.assert_called_once()
 
     def test_main_sets_logging_format(self):
@@ -973,16 +968,12 @@ class TestReferenceSwap(unittest.TestCase):
         self.assertNotIn(".acquire()", source)
         self.assertNotIn(".release()", source)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_cached_data_updated_by_reference_swap(self, mock_fetch, mock_read_key):
-        """_do_scrape updates _cached_data via direct assignment."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        new_data = {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}
-        mock_fetch.return_value = (new_data, "org-123")
+    def test_cached_data_updated_by_reference_swap(self):
+        """_do_collect updates _cached_data via direct assignment."""
+        new_data = _ok_bridge()
+        server, _, _, _, _ = _make_server(collector=_StubCollector(new_data))
         self.assertIsNone(server._cached_data)
-        server._do_scrape()
+        server._do_collect()
         self.assertIs(server._cached_data, new_data)
 
 
@@ -990,107 +981,81 @@ class TestReferenceSwap(unittest.TestCase):
 # Validate: SIGUSR1 triggers an actual out-of-cycle scrape
 # ---------------------------------------------------------------------------
 
-class TestSigusr1TriggersOutOfCycleScrape(unittest.TestCase):
-    """Verify SIGUSR1 wakes the poll loop and triggers a scrape."""
+class TestSigusr1TriggersOutOfCycleCollect(unittest.TestCase):
+    """Verify SIGUSR1 wakes the poll loop and triggers a collection."""
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_sigusr1_triggers_immediate_scrape_in_poll_loop(self, mock_fetch, mock_read_key):
-        """SIGUSR1 wakes the poll loop causing an out-of-cycle _do_scrape."""
-        server, _, _, _, _ = _make_server(interval=3600)  # long interval
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
+    def test_sigusr1_triggers_immediate_collect_in_poll_loop(self):
+        """SIGUSR1 wakes the poll loop causing an out-of-cycle _do_collect."""
+        server, _, _, _, _ = _make_server(
+            interval=3600, collector=_StubCollector(_ok_bridge())
+        )
 
-        scrape_count = [0]
-        original_do_scrape = server._do_scrape
+        count = [0]
+        original = server._do_collect
 
-        def counting_scrape():
-            original_do_scrape()
-            scrape_count[0] += 1
-            if scrape_count[0] >= 2:
+        def counting():
+            original()
+            count[0] += 1
+            if count[0] >= 2:
                 server._shutdown.set()
                 server._wake.set()
 
-        server._do_scrape = counting_scrape
+        server._do_collect = counting
 
-        # Simulate: poll loop starts, does first scrape, sleeps on wake.wait().
-        # We wake it via _handle_sigusr1 to trigger a second scrape.
+        # The poll loop collects once, then blocks on wake.wait(); SIGUSR1
+        # must wake it for a second collection well inside the 3600s interval.
         def wake_after_first():
-            # Wait for first scrape to complete
-            while scrape_count[0] < 1:
+            while count[0] < 1:
                 time.sleep(0.01)
-            # Trigger SIGUSR1 wake
             server._handle_sigusr1(signal.SIGUSR1, None)
 
         waker = threading.Thread(target=wake_after_first)
         waker.start()
         server._poll_loop()
         waker.join(timeout=5)
-        self.assertGreaterEqual(scrape_count[0], 2,
-                                "SIGUSR1 should have triggered a second scrape")
+        self.assertGreaterEqual(
+            count[0], 2, "SIGUSR1 should have triggered a second collection"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Validate: State transitions in _last_scrape_ok
+# Validate: State transitions in _last_collect_ok
 # ---------------------------------------------------------------------------
 
-class TestScrapeStateTransitions(unittest.TestCase):
-    """Test _last_scrape_ok transitions between success and failure."""
+class TestCollectStateTransitions(unittest.TestCase):
+    """Test _last_collect_ok transitions between success and failure."""
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_success_then_failure_then_success(self, mock_fetch, mock_read_key):
-        """_last_scrape_ok correctly transitions: True -> False -> True."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
+    def test_success_then_failure_then_success(self):
+        """_last_collect_ok correctly transitions: True -> False -> True."""
+        collector = _StubCollector(_ok_bridge())
+        server, _, _, _, _ = _make_server(collector=collector)
 
-        # Scrape 1: success
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
-        server._do_scrape()
-        self.assertTrue(server._last_scrape_ok)
+        server._do_collect()
+        self.assertTrue(server._last_collect_ok)
 
-        # Scrape 2: error
-        mock_fetch.return_value = ({
-            "status": "upstream_error", "error": "upstream_error",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 2,
-        }, "org-123")
-        server._do_scrape()
-        self.assertFalse(server._last_scrape_ok)
+        collector.result = error_bridge("usage_screen_timeout")
+        server._do_collect()
+        self.assertFalse(server._last_collect_ok)
 
-        # Scrape 3: success again
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 3}, "org-123")
-        server._do_scrape()
-        self.assertTrue(server._last_scrape_ok)
+        collector.result = _ok_bridge()
+        server._do_collect()
+        self.assertTrue(server._last_collect_ok)
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_health_reflects_scrape_transitions(self, mock_fetch, mock_read_key):
-        """Health endpoint status changes as scrape state transitions."""
-        server, routes, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
+    def test_health_reflects_collect_transitions(self):
+        """Health endpoint status changes as collection state transitions."""
+        collector = _StubCollector(_ok_bridge())
+        server, routes, _, _, _ = _make_server(collector=collector)
 
-        # Before any scrape: error
-        result = json.loads(routes["/health"]())
-        self.assertEqual(result["status"], "error")
+        # Before any collection: error (no data at all).
+        self.assertEqual(json.loads(routes["/health"]())["status"], "error")
 
-        # After successful scrape: ok
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
-        server._do_scrape()
-        result = json.loads(routes["/health"]())
-        self.assertEqual(result["status"], "ok")
+        server._do_collect()
+        self.assertEqual(json.loads(routes["/health"]())["status"], "ok")
 
-        # After failed scrape: degraded (has cached data but last scrape failed)
-        mock_fetch.return_value = ({
-            "status": "upstream_error", "error": "upstream_error",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 2,
-        }, "org-123")
-        server._do_scrape()
-        result = json.loads(routes["/health"]())
-        self.assertEqual(result["status"], "degraded")
+        # Failed collection with data already cached: degraded.
+        collector.result = error_bridge("usage_parse_failed")
+        server._do_collect()
+        self.assertEqual(json.loads(routes["/health"]())["status"], "degraded")
 
 
 # ---------------------------------------------------------------------------
@@ -1279,28 +1244,28 @@ class TestStartTimeTracking(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Validate: Scraper _error_bridge with all known error codes
+# Validate: error_bridge with all known collector error codes
 # ---------------------------------------------------------------------------
 
 class TestErrorBridgeAllCodes(unittest.TestCase):
-    """Verify _error_bridge works with all documented error codes."""
+    """Verify error_bridge works with every documented collector error code."""
 
     def test_all_known_error_codes_produce_valid_bridge(self):
         """Each documented error code produces a well-formed bridge dict."""
-        from tmux_status_server.scraper import _error_bridge
-
         error_codes = [
-            "session_key_expired",
-            "blocked",
-            "rate_limited",
-            "upstream_error",
-            "no_key",
-            "insecure_permissions",
-            "invalid_json",
+            "cli_not_found",
+            "cli_boot_timeout",
+            "cli_not_authenticated",
+            "usage_screen_timeout",
+            "usage_parse_failed",
+            "tmux_unavailable",
+            "collector_crashed",
         ]
         for code in error_codes:
-            result = _error_bridge(code, code)
-            self.assertEqual(result["status"], code, f"Failed for {code}")
+            result = error_bridge(code)
+            # status is always the literal "error"; the cause lives in `error`,
+            # which is what makes render.py's error branch reachable.
+            self.assertEqual(result["status"], "error", f"Failed for {code}")
             self.assertEqual(result["error"], code, f"Failed for {code}")
             self.assertEqual(result["five_hour"]["utilization"], "X", f"Failed for {code}")
             self.assertIsNone(result["five_hour"]["resets_at"], f"Failed for {code}")
@@ -1313,48 +1278,29 @@ class TestErrorBridgeAllCodes(unittest.TestCase):
 # Validate: Session key re-read on each cycle (key rotation support)
 # ---------------------------------------------------------------------------
 
-class TestKeyRotationSupport(unittest.TestCase):
-    """Verify that session key is re-read on each scrape, supporting rotation."""
+class TestCollectorIsReinvokedEachCycle(unittest.TestCase):
+    """Each cycle re-runs collection rather than reusing a cached credential.
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_different_keys_used_across_scrapes(self, mock_fetch, mock_read_key):
-        """Different session keys are passed to fetch_quota across scrapes."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.side_effect = [
-            {"sessionKey": "sk-first-key"},
-            {"sessionKey": "sk-rotated-key"},
-        ]
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
+    Replaces the old key-rotation test: there is no longer a session key to
+    rotate, but every cycle must still produce a freshly collected bridge.
+    """
 
-        server._do_scrape()
-        server._do_scrape()
+    def test_fresh_result_each_cycle(self):
+        """Consecutive cycles pick up changed collector output."""
+        collector = _StubCollector(_ok_bridge())
+        server, _, _, _, _ = _make_server(collector=collector)
 
-        # Verify fetch_quota was called with different keys
-        calls = mock_fetch.call_args_list
-        self.assertEqual(calls[0][0][0], "sk-first-key")
-        self.assertEqual(calls[1][0][0], "sk-rotated-key")
+        server._do_collect()
+        first = server._cached_data
 
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_key_error_mid_rotation_recovers(self, mock_fetch, mock_read_key):
-        """If key file temporarily missing during rotation, next cycle recovers."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.side_effect = [
-            {"sessionKey": "sk-good"},
-            {"error": "no_key"},  # key file missing during rotation
-            {"sessionKey": "sk-new"},
-        ]
-        mock_fetch.return_value = ({"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1}, "org-123")
+        second_bridge = _ok_bridge()
+        second_bridge["five_hour"]["utilization"] = 99
+        collector.result = second_bridge
+        server._do_collect()
 
-        server._do_scrape()
-        self.assertTrue(server._last_scrape_ok)
-
-        server._do_scrape()
-        self.assertFalse(server._last_scrape_ok)  # failed
-
-        server._do_scrape()
-        self.assertTrue(server._last_scrape_ok)  # recovered
+        self.assertEqual(collector.calls, 2)
+        self.assertIsNot(server._cached_data, first)
+        self.assertEqual(server._cached_data["five_hour"]["utilization"], 99)
 
 
 # ---------------------------------------------------------------------------
@@ -1372,7 +1318,6 @@ def _make_wsgi_server(**overrides):
     defaults = {
         "host": "127.0.0.1",
         "port": 7850,
-        "key_file": "/tmp/k.json",
         "api_key_file": None,
         "interval": 300,
     }
@@ -1452,7 +1397,7 @@ class TestAuthIntegrationWSGI(unittest.TestCase):
         server, app = _make_wsgi_server()
         server._api_key = "test-secret"
         server._cached_data = {"status": "ok"}
-        server._last_scrape_ok = True
+        server._last_collect_ok = True
 
         resp = app.get("/health")
         self.assertEqual(resp.status_int, 200)
@@ -1580,26 +1525,27 @@ class TestAuthBypassRegressionWSGI(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRendererNoneUtilizationGuard(unittest.TestCase):
-    """Verify the scraper+server pipeline handles None utilization correctly.
+    """Verify the collector+server pipeline handles None utilization correctly.
 
-    TS-28: When upstream returns missing utilization data, the scraper returns
-    None values which the renderer must guard against (is None or == 'X').
-    These tests verify the server-side contract that makes the renderer guard
-    necessary: fetch_quota can return None utilization in success responses.
+    TS-28: the renderer guards utilization with (is None or == 'X'). The CLI
+    collector never emits None on a successful bridge -- a window it cannot read
+    is a parse failure, not a success with a hole -- but /quota may still be
+    served by a remote or older server, so the guard and these pass-through
+    contracts must hold regardless.
     """
 
-    @mock.patch("tmux_status_server.scraper._http_get")
-    def test_none_utilization_in_success_response(self, mock_get):
-        """fetch_quota returns None utilization when upstream data is missing."""
-        from tmux_status_server.scraper import fetch_quota as _fq
-        mock_get.side_effect = [
-            (200, [{"uuid": "org-test"}]),
-            (200, {}),  # no five_hour or seven_day
-        ]
-        result, _ = _fq("sk-test")
-        self.assertEqual(result["status"], "ok")
-        self.assertIsNone(result["five_hour"]["utilization"])
-        self.assertIsNone(result["seven_day"]["utilization"])
+    def test_collector_never_emits_none_utilization_on_success(self):
+        """An ok bridge always carries numeric utilization for both windows."""
+        from tmux_status_server.cli_usage import CliUsageCollector, UsageScreenParser
+
+        fixtures = os.path.join(os.path.dirname(__file__), "fixtures")
+        with open(os.path.join(fixtures, "usage_nominal.txt")) as f:
+            screen = f.read()
+        parsed = UsageScreenParser().parse(screen)
+        bridge = CliUsageCollector._to_bridge(parsed, None)
+        self.assertEqual(bridge["status"], "ok")
+        self.assertIsInstance(bridge["five_hour"]["utilization"], float)
+        self.assertIsInstance(bridge["seven_day"]["utilization"], float)
 
     def test_none_utilization_passes_through_quota_endpoint(self):
         """Server /quota endpoint faithfully passes None utilization to clients."""
@@ -1659,7 +1605,7 @@ class TestWSGIAuthDataLeakageExhaustive(unittest.TestCase):
         server, app = _make_wsgi_server()
         server._api_key = "secret"
         server._cached_data = dict(_SAMPLE_QUOTA_DATA)
-        server._last_scrape_ok = True
+        server._last_collect_ok = True
 
         resp = app.get("/health")
         self.assertEqual(resp.status_int, 200)

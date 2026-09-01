@@ -252,6 +252,21 @@ if [ -f "$_settings" ]; then
     $_migrated && ok "Migrated settings.conf with new settings"
 fi
 
+# ── Retire the claude.ai session key ──────────────────────────
+# Usage now comes from the authenticated Claude CLI, so this file is dead
+# weight -- and it is a credential, so it should not linger unused. Offer to
+# remove it rather than deleting a secret on the user's behalf.
+_legacy_key="$CONFIG_DIR/claude-usage-key.json"
+if [ -f "$_legacy_key" ]; then
+    warn "Found an unused claude.ai session key at $_legacy_key"
+    info "Usage is now read from the Claude CLI; this key is no longer used."
+    read -rp "  Remove it? [y/N] " _reply
+    case "$_reply" in
+        [yY]*) rm -f "$_legacy_key" && ok "Removed $_legacy_key" ;;
+        *)     info "Left in place. Safe to delete at any time." ;;
+    esac
+fi
+
 # ── Add source line to tmux.conf ──────────────────────────────
 TMUX_CONF=$(detect_tmux_conf)
 info "Configuring $TMUX_CONF..."
