@@ -260,11 +260,18 @@ _legacy_key="$CONFIG_DIR/claude-usage-key.json"
 if [ -f "$_legacy_key" ]; then
     warn "Found an unused claude.ai session key at $_legacy_key"
     info "Usage is now read from the Claude CLI; this key is no longer used."
-    read -rp "  Remove it? [y/N] " _reply
-    case "$_reply" in
-        [yY]*) rm -f "$_legacy_key" && ok "Removed $_legacy_key" ;;
-        *)     info "Left in place. Safe to delete at any time." ;;
-    esac
+    if [ -t 0 ]; then
+        read -rp "  Remove it? [y/N] " _reply
+        case "$_reply" in
+            [yY]*) rm -f "$_legacy_key" && ok "Removed $_legacy_key" ;;
+            *)     info "Left in place. Safe to delete at any time." ;;
+        esac
+    else
+        # Never block a non-interactive install, and never delete a credential
+        # without being asked to.
+        info "Non-interactive install; left in place. Remove it with:"
+        info "  rm -f $_legacy_key"
+    fi
 fi
 
 # ── Add source line to tmux.conf ──────────────────────────────

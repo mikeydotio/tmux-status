@@ -18,6 +18,8 @@ test:
 	@bash tests/unit/test_status_conf_contract.sh
 	@echo "── install.sh source-dir resolution ──"
 	@bash tests/unit/test_install_dir.sh
+	@echo "── install/uninstall non-interactive safety ──"
+	@bash tests/unit/test_install_noninteractive.sh
 	@echo "── model unit tests ──"
 	@python3 -m unittest discover -s tests/unit -p 'test_*.py'
 	@echo "── render daemon unit tests ──"
