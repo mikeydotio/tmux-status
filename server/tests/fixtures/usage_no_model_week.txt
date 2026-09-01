@@ -1,0 +1,17 @@
+[Screen Reader Mode: on via flag]
+Claude Code v2.1.257
+Opus 5 (1M context) with high effort · Claude Max
+/home/user/project
+you: /usage
+Settings  Status   Config   Usage   Stats
+Session
+Total cost:            $0.0000
+Total duration (API):  0s
+Current session
+7% 7% used
+Resets 11:05am (America/New_York)
+Current week (all models)
+23% 23% used
+Resets Sep 3 at 9am (America/New_York)
+What's contributing to your limits usage?
+d to day · w to week

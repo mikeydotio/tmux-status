@@ -1,0 +1,6 @@
+[Screen Reader Mode: on via flag]
+Claude Code v2.1.257
+Welcome to Claude Code
+Select login method:
+1. Claude account with subscription
+2. Anthropic Console account
