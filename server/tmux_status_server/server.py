@@ -5,8 +5,8 @@ Provides QuotaServer class with Bottle app, /quota and /health endpoints,
 API key authentication via hmac.compare_digest, background poll thread,
 and signal handling (SIGTERM/SIGINT/SIGUSR1).
 
-Bottle is imported lazily inside methods to avoid import-time dependency
-on the package (mirrors the curl_cffi pattern in scraper.py).
+Bottle is imported lazily inside methods to avoid an import-time dependency
+on the package.
 """
 
 import hmac
@@ -19,36 +19,39 @@ import time
 
 from tmux_status_server import __version__
 from tmux_status_server.config import parse_args, warn_if_exposed
-from tmux_status_server.scraper import _error_bridge, fetch_quota, read_session_key
+from tmux_status_server.cli_usage import (
+    CliUsageCollector,
+    HeadlessClaudeSession,
+    error_bridge,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class QuotaServer:
-    """HTTP server that polls claude.ai for quota data and serves it via REST.
+    """HTTP server that collects Claude usage data and serves it via REST.
 
     Attributes:
         host: Address to bind the HTTP server.
         port: Port to bind the HTTP server.
-        key_file: Path to the claude.ai session key JSON file.
         api_key_file: Optional path to API key file for client auth.
-        interval: Scrape interval in seconds.
+        interval: Collection interval in seconds.
+        collector: Usage collector; defaults to CliUsageCollector.
     """
 
-    def __init__(self, host, port, key_file, api_key_file, interval):
+    def __init__(self, host, port, api_key_file, interval, collector=None):
         self.host = host
         self.port = port
-        self.key_file = key_file
         self.api_key_file = api_key_file
         self.interval = interval
+        self.collector = collector or CliUsageCollector()
 
         self._cached_data = None
-        self._last_scrape_ok = False
+        self._last_collect_ok = False
         self._start_time = time.time()
         self._shutdown = threading.Event()
         self._wake = threading.Event()
         self._api_key = None
-        self._org_uuid = None
         self._poll_thread = None
 
         self._app = self._create_app()
@@ -104,7 +107,7 @@ class QuotaServer:
         def health():
             response.content_type = "application/json"
             uptime = time.time() - self._start_time
-            if self._cached_data is not None and self._last_scrape_ok:
+            if self._cached_data is not None and self._last_collect_ok:
                 status = "ok"
             elif self._cached_data is not None:
                 status = "degraded"
@@ -133,39 +136,38 @@ class QuotaServer:
 
         return app
 
-    def _do_scrape(self):
-        """Perform a single scrape cycle. Re-reads session key each time."""
-        key_data = read_session_key(self.key_file)
-        if "error" in key_data:
-            logger.error("Session key error: %s", key_data["error"])
-            self._cached_data = _error_bridge(key_data["error"], key_data["error"])
-            self._last_scrape_ok = False
-            return
+    def _do_collect(self):
+        """Perform a single usage-collection cycle.
 
-        session_key = key_data["sessionKey"]
+        The collector contains its own failure handling and returns an error
+        bridge rather than raising; the extra guard here is for a collector
+        that breaks its contract, so the poll thread can never die.
+        """
         try:
-            result, self._org_uuid = fetch_quota(session_key, self._org_uuid)
-            self._cached_data = result
-            if result.get("status") == "ok":
-                self._last_scrape_ok = True
-                logger.info("Scrape successful")
-            else:
-                self._last_scrape_ok = False
-                logger.warning("Scrape returned status: %s", result.get("status"))
+            result = self.collector.collect()
         except Exception:
-            logger.exception("Scrape failed")
-            self._cached_data = _error_bridge("upstream_error", "upstream_error")
-            self._last_scrape_ok = False
+            logger.exception("Collector raised")
+            result = error_bridge("collector_crashed")
+
+        self._cached_data = result
+        if result.get("status") == "ok":
+            self._last_collect_ok = True
+            logger.info("Usage collection successful")
+        else:
+            self._last_collect_ok = False
+            logger.warning(
+                "Usage collection failed: %s", result.get("error", "unknown")
+            )
 
     def _poll_loop(self):
-        """Background poll loop. Runs first scrape immediately, then at interval."""
-        self._do_scrape()
+        """Background poll loop. Collects immediately, then at each interval."""
+        self._do_collect()
         while not self._shutdown.is_set():
             self._wake.wait(timeout=self.interval)
             self._wake.clear()
             if self._shutdown.is_set():
                 break
-            self._do_scrape()
+            self._do_collect()
 
     def _handle_sigterm(self, signum, frame):
         """Handle SIGTERM/SIGINT: raise SystemExit to stop serve_forever()."""
@@ -175,8 +177,8 @@ class QuotaServer:
         raise SystemExit(0)
 
     def _handle_sigusr1(self, signum, frame):
-        """Handle SIGUSR1: wake poll thread for immediate scrape."""
-        logger.info("Received SIGUSR1, triggering immediate scrape")
+        """Handle SIGUSR1: wake poll thread for an immediate collection."""
+        logger.info("Received SIGUSR1, triggering immediate collection")
         self._wake.set()
 
     def run(self):
@@ -215,11 +217,19 @@ def main():
     )
     warn_if_exposed(args)
 
+    def session_factory():
+        """Build a capture session on the configured isolated socket."""
+        return HeadlessClaudeSession(
+            socket_name=args.usage_socket,
+            cwd=args.usage_cwd,
+            boot_timeout=args.boot_timeout,
+        )
+
     server = QuotaServer(
         host=args.host,
         port=args.port,
-        key_file=args.key_file,
         api_key_file=args.api_key_file,
         interval=args.interval,
+        collector=CliUsageCollector(session_factory=session_factory),
     )
     server.run()

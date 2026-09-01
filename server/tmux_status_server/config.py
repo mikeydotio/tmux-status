@@ -15,7 +15,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7850
 DEFAULT_INTERVAL = 300
 DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_KEY_FILE = os.path.join("~", ".config", "tmux-status", "claude-usage-key.json")
+DEFAULT_USAGE_SOCKET = "tmux-status-usage"
+DEFAULT_BOOT_TIMEOUT = 45.0
 
 
 def parse_args(argv=None):
@@ -25,11 +26,11 @@ def parse_args(argv=None):
         argv: Argument list to parse. Defaults to sys.argv[1:] when None.
 
     Returns:
-        argparse.Namespace with host, port, key_file, api_key_file,
-        interval, and log_level attributes.
+        argparse.Namespace with host, port, api_key_file, interval,
+        usage_socket, usage_cwd, boot_timeout, and log_level attributes.
     """
     parser = argparse.ArgumentParser(
-        description="Scrape claude.ai for quota data and serve via HTTP REST API.",
+        description="Collect Claude usage data from the CLI and serve via HTTP REST API.",
     )
 
     parser.add_argument(
@@ -44,9 +45,23 @@ def parse_args(argv=None):
         help="Port to bind the HTTP server (default: %(default)s)",
     )
     parser.add_argument(
-        "--key-file",
-        default=DEFAULT_KEY_FILE,
-        help="Path to claude.ai session key JSON file (default: %(default)s)",
+        "--usage-socket",
+        default=DEFAULT_USAGE_SOCKET,
+        help=(
+            "Dedicated tmux socket name for the headless usage capture. "
+            "MUST NOT be the user's default server (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--usage-cwd",
+        default=None,
+        help="Working directory for the headless CLI session (default: process cwd)",
+    )
+    parser.add_argument(
+        "--boot-timeout",
+        type=float,
+        default=DEFAULT_BOOT_TIMEOUT,
+        help="Seconds to wait for the CLI TUI to accept input (default: %(default)s)",
     )
     parser.add_argument(
         "--api-key-file",
@@ -57,7 +72,7 @@ def parse_args(argv=None):
         "--interval",
         type=int,
         default=DEFAULT_INTERVAL,
-        help="Scrape interval in seconds (default: %(default)s)",
+        help="Usage collection interval in seconds (default: %(default)s)",
     )
     parser.add_argument(
         "--log-level",
@@ -71,8 +86,15 @@ def parse_args(argv=None):
     if args.interval < 30:
         parser.error("--interval must be at least 30 seconds")
 
+    if args.usage_socket == "default":
+        parser.error(
+            "--usage-socket must not be 'default': the capture session must be "
+            "isolated from the user's tmux server"
+        )
+
     # Expand ~ in file paths
-    args.key_file = os.path.expanduser(args.key_file)
+    if args.usage_cwd is not None:
+        args.usage_cwd = os.path.expanduser(args.usage_cwd)
     if args.api_key_file is not None:
         args.api_key_file = os.path.expanduser(args.api_key_file)
 

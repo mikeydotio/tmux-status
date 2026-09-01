@@ -28,13 +28,8 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from tmux_status_server import scraper
 from tmux_status_server.config import parse_args
-from tmux_status_server.scraper import (
-    _error_bridge,
-    fetch_quota,
-    read_session_key,
-)
+from tmux_status_server.cli_usage import error_bridge
 
 
 # ---------------------------------------------------------------------------
@@ -458,106 +453,18 @@ class TestAuthSecurityEdgeCases(unittest.TestCase):
 # Scraper: ImportError path for missing curl_cffi
 # ---------------------------------------------------------------------------
 
-class TestFetchQuotaImportError(unittest.TestCase):
-    """Test fetch_quota when curl_cffi is not installed."""
-
-    def test_import_error_returns_upstream_error(self):
-        """When curl_cffi import fails, fetch_quota returns upstream_error."""
-        with mock.patch("tmux_status_server.scraper._http_get",
-                        side_effect=ImportError("No module named 'curl_cffi'")):
-            result, _ = fetch_quota("sk-ant-test")
-        self.assertEqual(result["status"], "upstream_error")
-        self.assertEqual(result["error"], "upstream_error")
-        self.assertEqual(result["five_hour"]["utilization"], "X")
 
 
 # ---------------------------------------------------------------------------
 # Scraper: _http_get cookie header construction
 # ---------------------------------------------------------------------------
 
-class TestHttpGetHeaders(unittest.TestCase):
-    """Test that _http_get constructs correct headers including Cookie."""
-
-    def test_cookie_header_format_in_source(self):
-        """_http_get constructs Cookie header as 'sessionKey={value}'."""
-        scraper_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "scraper.py"
-        )
-        with open(scraper_path) as f:
-            source = f.read()
-        # Verify the cookie header format string
-        self.assertIn('f"sessionKey={session_key}"', source)
-        self.assertIn('"Cookie"', source)
-
-    def test_request_headers_included_in_http_get(self):
-        """_http_get merges REQUEST_HEADERS with the Cookie header."""
-        scraper_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "scraper.py"
-        )
-        with open(scraper_path) as f:
-            source = f.read()
-        # Verify REQUEST_HEADERS is spread into the headers dict
-        self.assertIn("{**REQUEST_HEADERS", source)
-
-    def test_impersonate_chrome_in_source(self):
-        """_http_get uses Chrome TLS impersonation."""
-        scraper_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "scraper.py"
-        )
-        with open(scraper_path) as f:
-            source = f.read()
-        self.assertIn('impersonate="chrome', source)
-
-    def test_timeout_set_in_source(self):
-        """_http_get sets a timeout on HTTP requests."""
-        scraper_path = os.path.join(
-            os.path.dirname(__file__), "..", "tmux_status_server", "scraper.py"
-        )
-        with open(scraper_path) as f:
-            source = f.read()
-        self.assertIn("timeout=", source)
 
 
 # ---------------------------------------------------------------------------
 # Server: _do_scrape with all session key error codes
 # ---------------------------------------------------------------------------
 
-class TestDoScrapeAllKeyErrors(unittest.TestCase):
-    """Test _do_scrape handles all possible session key error codes."""
-
-    def _make_server(self, **overrides):
-        from test_server import _make_server as _ms
-        return _ms(**overrides)
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    def test_insecure_permissions_error(self, mock_read_key):
-        """_do_scrape handles insecure_permissions key error."""
-        server, _, _, _, _ = self._make_server()
-        mock_read_key.return_value = {"error": "insecure_permissions"}
-        server._do_scrape()
-        self.assertIsNotNone(server._cached_data)
-        self.assertEqual(server._cached_data["status"], "insecure_permissions")
-        self.assertEqual(server._cached_data["error"], "insecure_permissions")
-        self.assertFalse(server._last_scrape_ok)
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    def test_invalid_json_error(self, mock_read_key):
-        """_do_scrape handles invalid_json key error."""
-        server, _, _, _, _ = self._make_server()
-        mock_read_key.return_value = {"error": "invalid_json"}
-        server._do_scrape()
-        self.assertEqual(server._cached_data["status"], "invalid_json")
-        self.assertEqual(server._cached_data["error"], "invalid_json")
-        self.assertFalse(server._last_scrape_ok)
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    def test_no_key_error(self, mock_read_key):
-        """_do_scrape handles no_key error."""
-        server, _, _, _, _ = self._make_server()
-        mock_read_key.return_value = {"error": "no_key"}
-        server._do_scrape()
-        self.assertEqual(server._cached_data["status"], "no_key")
-        self.assertFalse(server._last_scrape_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -608,133 +515,14 @@ class TestConfigUnknownArgs(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Scraper: read_session_key with unicode content
 # ---------------------------------------------------------------------------
 
-class TestReadSessionKeyUnicode(unittest.TestCase):
-    """Test read_session_key handles unicode content correctly."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.key_path = os.path.join(self.tmpdir, "key.json")
-
-    def tearDown(self):
-        if os.path.exists(self.key_path):
-            os.chmod(self.key_path, 0o600)
-            os.remove(self.key_path)
-        os.rmdir(self.tmpdir)
-
-    def test_session_key_with_unicode_chars(self):
-        """Session key containing unicode characters is read correctly."""
-        with open(self.key_path, "w") as f:
-            json.dump({"sessionKey": "sk-ant-test-\u00e9\u00e8\u00ea"}, f)
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        self.assertNotIn("error", result)
-        self.assertIn("\u00e9", result["sessionKey"])
-
-    def test_empty_json_object(self):
-        """Empty JSON object (no sessionKey) returns invalid_json."""
-        with open(self.key_path, "w") as f:
-            json.dump({}, f)
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["error"], "invalid_json")
-
-    def test_null_session_key_value(self):
-        """sessionKey with null value -- present but null."""
-        with open(self.key_path, "w") as f:
-            json.dump({"sessionKey": None}, f)
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        # Key is present, so it should succeed (value is None)
-        self.assertNotIn("error", result)
-        self.assertIsNone(result["sessionKey"])
-
-    def test_empty_string_session_key(self):
-        """sessionKey with empty string value is accepted."""
-        with open(self.key_path, "w") as f:
-            json.dump({"sessionKey": ""}, f)
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        self.assertNotIn("error", result)
-        self.assertEqual(result["sessionKey"], "")
-
-    def test_empty_file(self):
-        """Empty file returns invalid_json error."""
-        with open(self.key_path, "w") as f:
-            pass  # empty file
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["error"], "invalid_json")
-
-    def test_json_with_extra_fields_preserves_session_key(self):
-        """Extra fields in JSON are ignored, sessionKey is extracted."""
-        with open(self.key_path, "w") as f:
-            json.dump({
-                "sessionKey": "sk-valid",
-                "extra": "field",
-                "nested": {"data": 123},
-            }, f)
-        os.chmod(self.key_path, 0o600)
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], "sk-valid")
-        # Extra fields should NOT be in result
-        self.assertNotIn("extra", result)
-        self.assertNotIn("nested", result)
 
 
 # ---------------------------------------------------------------------------
 # Scraper: fetch_quota with missing window keys in usage response
 # ---------------------------------------------------------------------------
 
-class TestFetchQuotaMissingWindowKeys(unittest.TestCase):
-    """Test fetch_quota handles partial/missing window data gracefully."""
-
-    @mock.patch("tmux_status_server.scraper._http_get")
-    def test_empty_usage_response_returns_none_values(self, mock_get):
-        """Completely empty usage body returns None for all window values."""
-        mock_get.side_effect = [
-            (200, [{"uuid": "org-test"}]),
-            (200, {}),
-        ]
-        result, _ = fetch_quota("sk-ant-test")
-        self.assertEqual(result["status"], "ok")
-        self.assertIsNone(result["five_hour"]["utilization"])
-        self.assertIsNone(result["five_hour"]["resets_at"])
-        self.assertIsNone(result["seven_day"]["utilization"])
-        self.assertIsNone(result["seven_day"]["resets_at"])
-
-    @mock.patch("tmux_status_server.scraper._http_get")
-    def test_partial_window_data(self, mock_get):
-        """Window with only utilization, no resets_at."""
-        mock_get.side_effect = [
-            (200, [{"uuid": "org-test"}]),
-            (200, {
-                "five_hour": {"utilization": 42},
-                "seven_day": {"utilization": 15},
-            }),
-        ]
-        result, _ = fetch_quota("sk-ant-test")
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["five_hour"]["utilization"], 42)
-        self.assertIsNone(result["five_hour"]["resets_at"])
-
-    @mock.patch("tmux_status_server.scraper._http_get")
-    def test_window_value_is_none(self, mock_get):
-        """Window value set to None explicitly."""
-        mock_get.side_effect = [
-            (200, [{"uuid": "org-test"}]),
-            (200, {
-                "five_hour": None,
-                "seven_day": None,
-            }),
-        ]
-        result, _ = fetch_quota("sk-ant-test")
-        self.assertEqual(result["status"], "ok")
-        # None.get() would fail, so this should handle gracefully via or {}
-        self.assertIsNone(result["five_hour"]["utilization"])
-        self.assertIsNone(result["five_hour"]["resets_at"])
 
 
 # ---------------------------------------------------------------------------
@@ -763,28 +551,29 @@ class TestHealthUptimeEdgeCases(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Server: error_bridge consistency with scraper
+# Server: error_bridge consistency with the collector
 # ---------------------------------------------------------------------------
 
-class TestServerUsesScraperErrorBridge(unittest.TestCase):
-    """Verify server.py uses scraper._error_bridge for error state."""
+class TestServerUsesCollectorErrorBridge(unittest.TestCase):
+    """Verify server.py uses cli_usage.error_bridge for error state."""
 
-    def test_scraper_error_bridge_imported_in_server(self):
-        """server.py imports _error_bridge from scraper."""
+    def test_error_bridge_imported_in_server(self):
+        """server.py imports error_bridge from cli_usage."""
         server_path = os.path.join(
             os.path.dirname(__file__), "..", "tmux_status_server", "server.py"
         )
         with open(server_path) as f:
             source = f.read()
-        self.assertIn("_error_bridge", source)
-        self.assertIn("from tmux_status_server.scraper import", source)
+        self.assertIn("error_bridge", source)
+        self.assertIn("from tmux_status_server.cli_usage import", source)
 
     def test_error_bridge_output_is_json_serializable(self):
-        """_error_bridge output can be serialized to JSON without errors."""
-        result = _error_bridge("test_error", "test_error")
+        """error_bridge output can be serialized to JSON without errors."""
+        result = error_bridge("test_error")
         serialized = json.dumps(result)
         deserialized = json.loads(serialized)
-        self.assertEqual(deserialized["status"], "test_error")
+        self.assertEqual(deserialized["status"], "error")
+        self.assertEqual(deserialized["error"], "test_error")
         self.assertEqual(deserialized["five_hour"]["utilization"], "X")
 
 
@@ -823,25 +612,25 @@ class TestQuotaEndpointConsistency(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Scraper: _error_bridge does not mutate between calls
+# Collector: error_bridge does not mutate between calls
 # ---------------------------------------------------------------------------
 
 class TestErrorBridgeImmutability(unittest.TestCase):
-    """Verify that _error_bridge returns a fresh dict each time."""
+    """Verify that error_bridge returns a fresh dict each time."""
 
     def test_separate_calls_return_different_objects(self):
-        """Two calls to _error_bridge return different dict objects."""
-        r1 = _error_bridge("a", "a")
-        r2 = _error_bridge("b", "b")
+        """Two calls to error_bridge return different dict objects."""
+        r1 = error_bridge("a")
+        r2 = error_bridge("b")
         self.assertIsNot(r1, r2)
-        self.assertEqual(r1["status"], "a")
-        self.assertEqual(r2["status"], "b")
+        self.assertEqual(r1["error"], "a")
+        self.assertEqual(r2["error"], "b")
 
     def test_mutating_result_does_not_affect_next_call(self):
         """Mutating one result does not affect subsequent calls."""
-        r1 = _error_bridge("x", "x")
+        r1 = error_bridge("x")
         r1["five_hour"]["utilization"] = "MUTATED"
-        r2 = _error_bridge("y", "y")
+        r2 = error_bridge("y")
         self.assertEqual(r2["five_hour"]["utilization"], "X")
 
 

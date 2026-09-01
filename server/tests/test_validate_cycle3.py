@@ -26,7 +26,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from tmux_status_server.scraper import _error_bridge, fetch_quota, read_session_key
+from tmux_status_server.cli_usage import error_bridge
 
 
 # ---------------------------------------------------------------------------
@@ -40,218 +40,12 @@ from test_server import _make_server, _make_wsgi_server, _SAMPLE_QUOTA_DATA
 # TS-13: _org_uuid instance lifecycle through _do_scrape
 # ---------------------------------------------------------------------------
 
-class TestOrgUuidInstanceLifecycleThroughDoScrape(unittest.TestCase):
-    """Verify _org_uuid on QuotaServer is updated by _do_scrape across cycles.
-
-    TS-13 moved _org_uuid from a module global to an instance variable on
-    QuotaServer. These tests verify the instance-level caching works end-to-end
-    through _do_scrape, not just at the fetch_quota level.
-    """
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_starts_none(self, mock_fetch, mock_read_key):
-        """_org_uuid is None before any scrape."""
-        server, _, _, _, _ = _make_server()
-        self.assertIsNone(server._org_uuid)
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_set_after_successful_scrape(self, mock_fetch, mock_read_key):
-        """_org_uuid is populated after first successful _do_scrape."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-discovered-123",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-discovered-123")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_passed_to_fetch_quota_on_second_call(self, mock_fetch, mock_read_key):
-        """Second _do_scrape passes the cached _org_uuid to fetch_quota."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-abc",
-        )
-
-        server._do_scrape()
-        server._do_scrape()
-
-        # Second call should have received the cached org_uuid
-        calls = mock_fetch.call_args_list
-        self.assertEqual(len(calls), 2)
-        # First call: org_uuid was None (initial state)
-        self.assertIsNone(calls[0][0][1])
-        # Second call: org_uuid is the one returned by first call
-        self.assertEqual(calls[1][0][1], "org-abc")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_cleared_on_auth_error_in_do_scrape(self, mock_fetch, mock_read_key):
-        """_org_uuid is cleared when _do_scrape receives a 401-equivalent error."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-
-        # First scrape: success, sets org_uuid
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-will-be-cleared",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-will-be-cleared")
-
-        # Second scrape: 401-equivalent, returns None org_uuid
-        mock_fetch.return_value = (
-            _error_bridge("session_key_expired", "session_key_expired"),
-            None,  # org_uuid cleared
-        )
-        server._do_scrape()
-        self.assertIsNone(server._org_uuid,
-                          "_org_uuid should be None after auth error")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_rediscovered_after_auth_error_recovery(self, mock_fetch, mock_read_key):
-        """After auth error clears _org_uuid, next success rediscovers it."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-
-        # Cycle 1: success
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-original",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-original")
-
-        # Cycle 2: auth error, clears org_uuid
-        mock_fetch.return_value = (
-            _error_bridge("session_key_expired", "session_key_expired"),
-            None,
-        )
-        server._do_scrape()
-        self.assertIsNone(server._org_uuid)
-
-        # Cycle 3: success with new org
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 3},
-            "org-rediscovered",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-rediscovered")
-
-        # Verify: cycle 3 passed None to fetch_quota (forcing rediscovery)
-        calls = mock_fetch.call_args_list
-        self.assertIsNone(calls[2][0][1],
-                          "Third call should pass None org_uuid to trigger rediscovery")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_preserved_on_rate_limit_error(self, mock_fetch, mock_read_key):
-        """_org_uuid is preserved when _do_scrape gets a rate limit (429)."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-
-        # Success sets org_uuid
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-keep-this",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-keep-this")
-
-        # Rate limit preserves org_uuid
-        mock_fetch.return_value = (
-            _error_bridge("rate_limited", "rate_limited"),
-            "org-keep-this",  # preserved
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-keep-this",
-                         "_org_uuid should be preserved after rate limit")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_not_cleared_when_key_file_error(self, mock_fetch, mock_read_key):
-        """_org_uuid is NOT cleared when key file read fails.
-
-        Key file errors are handled before fetch_quota is called. The org_uuid
-        should remain cached from the last successful cycle.
-        """
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-cached",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-cached")
-
-        # Key file error -- fetch_quota not called, org_uuid should be untouched
-        mock_read_key.return_value = {"error": "no_key"}
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-cached",
-                         "_org_uuid should be preserved when key file error occurs")
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_org_uuid_not_cleared_on_exception(self, mock_fetch, mock_read_key):
-        """_org_uuid is NOT cleared when fetch_quota raises an exception.
-
-        The exception handler sets error bridge but should not touch _org_uuid
-        because the exception path uses self._org_uuid on the left side of
-        the tuple unpack which would fail. It sets _cached_data directly.
-        """
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-cached",
-        )
-        server._do_scrape()
-        self.assertEqual(server._org_uuid, "org-cached")
-
-        # Exception in fetch_quota
-        mock_fetch.side_effect = RuntimeError("boom")
-        server._do_scrape()
-        # The except block in _do_scrape does NOT do tuple unpack, so _org_uuid
-        # should remain from the last successful assignment
-        self.assertEqual(server._org_uuid, "org-cached",
-                         "_org_uuid should be preserved when fetch_quota raises")
 
 
 # ---------------------------------------------------------------------------
 # TS-13: Separate QuotaServer instances have independent _org_uuid
 # ---------------------------------------------------------------------------
 
-class TestOrgUuidInstanceIsolation(unittest.TestCase):
-    """Verify two QuotaServer instances do not share _org_uuid state.
-
-    This is the key invariant that TS-13 fixed: before the fix, _org_uuid
-    was a module-level global, so two server instances would share it.
-    """
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_two_servers_have_independent_org_uuid(self, mock_fetch, mock_read_key):
-        """Two QuotaServer instances do not share _org_uuid."""
-        server_a, _, _, _, _ = _make_server()
-        server_b, _, _, _, _ = _make_server()
-
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {}, "seven_day": {}, "timestamp": 1},
-            "org-for-server-a",
-        )
-
-        server_a._do_scrape()
-        self.assertEqual(server_a._org_uuid, "org-for-server-a")
-        self.assertIsNone(server_b._org_uuid,
-                          "Server B should not inherit Server A's _org_uuid")
 
 
 # ---------------------------------------------------------------------------
@@ -299,12 +93,12 @@ class TestSigtermFunctionalBehavior(unittest.TestCase):
 
         # Mock _do_scrape to avoid real scraping
         scrape_count = [0]
-        original = server._do_scrape
+        original = server._do_collect
 
         def mock_scrape():
             scrape_count[0] += 1
 
-        server._do_scrape = mock_scrape
+        server._do_collect = mock_scrape
 
         # Poll loop should do one scrape then exit
         server._poll_loop()
@@ -387,7 +181,7 @@ class TestWSGIQuotaResponseContract(unittest.TestCase):
         self.assertEqual(data["error"], "no_data_yet")
 
     def test_error_status_passes_through_wsgi(self):
-        """Error status from scraper passes through WSGI pipeline unchanged."""
+        """Error status from the collector passes through WSGI unchanged."""
         server, app = _make_wsgi_server()
         server._api_key = None
         server._cached_data = {
@@ -408,30 +202,6 @@ class TestWSGIQuotaResponseContract(unittest.TestCase):
 # Data integrity: _do_scrape error bridge never contains org_uuid
 # ---------------------------------------------------------------------------
 
-class TestDoScrapeErrorBridgeNoOrgUuid(unittest.TestCase):
-    """Verify that error bridges produced by _do_scrape never contain org_uuid.
-
-    The bridge-format contract says org_uuid is only in success responses.
-    Error responses should not leak the org identifier.
-    """
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    def test_key_error_bridge_has_no_org_uuid(self, mock_read_key):
-        """Error bridge from key file error does not contain org_uuid."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"error": "no_key"}
-        server._do_scrape()
-        self.assertNotIn("org_uuid", server._cached_data)
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_exception_bridge_has_no_org_uuid(self, mock_fetch, mock_read_key):
-        """Error bridge from exception does not contain org_uuid."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-        mock_fetch.side_effect = RuntimeError("crash")
-        server._do_scrape()
-        self.assertNotIn("org_uuid", server._cached_data)
 
 
 # ---------------------------------------------------------------------------
@@ -573,66 +343,6 @@ class TestClientFetchQuotaLargePayload(unittest.TestCase):
 # Security: Session key values with injection patterns
 # ---------------------------------------------------------------------------
 
-class TestSessionKeyInjectionPatterns(unittest.TestCase):
-    """Verify read_session_key handles adversarial content safely."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.key_path = os.path.join(self.tmpdir, "key.json")
-
-    def tearDown(self):
-        if os.path.exists(self.key_path):
-            os.chmod(self.key_path, 0o600)
-            os.remove(self.key_path)
-        os.rmdir(self.tmpdir)
-
-    def _write_key(self, data):
-        with open(self.key_path, "w") as f:
-            json.dump(data, f)
-        os.chmod(self.key_path, 0o600)
-
-    def test_session_key_with_sql_injection_payload(self):
-        """Session key containing SQL injection is read as-is (no interpretation)."""
-        self._write_key({"sessionKey": "'; DROP TABLE users;--"})
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], "'; DROP TABLE users;--")
-        self.assertNotIn("error", result)
-
-    def test_session_key_with_xss_payload(self):
-        """Session key containing XSS payload is read as-is."""
-        self._write_key({"sessionKey": '<script>alert("xss")</script>'})
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], '<script>alert("xss")</script>')
-        self.assertNotIn("error", result)
-
-    def test_session_key_with_command_injection(self):
-        """Session key with shell command injection is treated as literal string."""
-        self._write_key({"sessionKey": "$(rm -rf /); sk-test"})
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], "$(rm -rf /); sk-test")
-        self.assertNotIn("error", result)
-
-    def test_session_key_with_null_bytes(self):
-        """Session key containing null bytes is read correctly."""
-        self._write_key({"sessionKey": "sk-test\x00injected"})
-        result = read_session_key(self.key_path)
-        self.assertIn("sk-test", result["sessionKey"])
-        self.assertNotIn("error", result)
-
-    def test_session_key_with_path_traversal(self):
-        """Session key containing path traversal characters is read as-is."""
-        self._write_key({"sessionKey": "../../etc/passwd"})
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], "../../etc/passwd")
-        self.assertNotIn("error", result)
-
-    def test_very_long_session_key(self):
-        """Very long session key (10KB) is read without error."""
-        long_key = "sk-" + "a" * 10000
-        self._write_key({"sessionKey": long_key})
-        result = read_session_key(self.key_path)
-        self.assertEqual(result["sessionKey"], long_key)
-        self.assertNotIn("error", result)
 
 
 # ---------------------------------------------------------------------------
@@ -640,25 +350,27 @@ class TestSessionKeyInjectionPatterns(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestErrorBridgeSanitization(unittest.TestCase):
-    """Verify _error_bridge output never contains dangerous content."""
+    """Verify error_bridge output never contains dangerous content."""
 
     def test_error_bridge_with_injection_status(self):
-        """_error_bridge with adversarial status is still well-formed JSON."""
-        result = _error_bridge(
-            '"; DROP TABLE; --',
-            '<script>alert(1)</script>'
-        )
+        """error_bridge with an adversarial code is still well-formed JSON."""
+        result = error_bridge('"; DROP TABLE; --<script>alert(1)</script>')
         serialized = json.dumps(result)
         # Must be valid JSON
         deserialized = json.loads(serialized)
-        self.assertEqual(deserialized["status"], '"; DROP TABLE; --')
+        self.assertEqual(deserialized["status"], "error")
+        self.assertEqual(
+            deserialized["error"], '"; DROP TABLE; --<script>alert(1)</script>'
+        )
         # The "error" field faithfully stores whatever was passed, but this is
         # only consumed by internal code, never rendered as HTML or SQL
 
     def test_error_bridge_all_fields_present(self):
-        """_error_bridge always has status, five_hour, seven_day, error, timestamp."""
-        result = _error_bridge("test", "test")
-        required = {"status", "five_hour", "seven_day", "error", "timestamp"}
+        """error_bridge always has status, five_hour, seven_day, error, timestamp."""
+        result = error_bridge("test")
+        required = {
+            "status", "five_hour", "seven_day", "model_week", "error", "timestamp",
+        }
         self.assertEqual(set(result.keys()), required)
 
 
@@ -670,11 +382,11 @@ class TestWSGIHealthContract(unittest.TestCase):
     """Verify /health endpoint contract via real WSGI pipeline."""
 
     def test_health_ok_state(self):
-        """/health returns ok when cached data and last scrape succeeded."""
+        """/health returns ok when cached data and last collection succeeded."""
         server, app = _make_wsgi_server()
         server._api_key = None
         server._cached_data = {"status": "ok"}
-        server._last_scrape_ok = True
+        server._last_collect_ok = True
 
         resp = app.get("/health")
         data = resp.json
@@ -688,7 +400,7 @@ class TestWSGIHealthContract(unittest.TestCase):
         server, app = _make_wsgi_server()
         server._api_key = None
         server._cached_data = {"status": "upstream_error"}
-        server._last_scrape_ok = False
+        server._last_collect_ok = False
 
         resp = app.get("/health")
         data = resp.json
@@ -719,68 +431,11 @@ class TestWSGIHealthContract(unittest.TestCase):
 # Edge case: _do_scrape with exception preserves previous cached data
 # ---------------------------------------------------------------------------
 
-class TestDoScrapeExceptionPreservesData(unittest.TestCase):
-    """Verify _do_scrape exception path still updates cached data (doesn't leave stale)."""
-
-    @mock.patch("tmux_status_server.scraper.read_session_key")
-    @mock.patch("tmux_status_server.scraper.fetch_quota")
-    def test_exception_replaces_previous_good_data_with_error(self, mock_fetch, mock_read_key):
-        """After exception, cached data is an error bridge (not stale success data)."""
-        server, _, _, _, _ = _make_server()
-        mock_read_key.return_value = {"sessionKey": "sk-test"}
-
-        # First: success
-        mock_fetch.return_value = (
-            {"status": "ok", "five_hour": {"utilization": 42}, "seven_day": {"utilization": 15}, "timestamp": 1},
-            "org-123",
-        )
-        server._do_scrape()
-        self.assertEqual(server._cached_data["status"], "ok")
-
-        # Second: exception
-        mock_fetch.side_effect = RuntimeError("boom")
-        server._do_scrape()
-        self.assertEqual(server._cached_data["status"], "upstream_error")
-        self.assertEqual(server._cached_data["five_hour"]["utilization"], "X")
 
 
 # ---------------------------------------------------------------------------
-# Edge case: read_session_key with symlink
 # ---------------------------------------------------------------------------
 
-class TestReadSessionKeySymlink(unittest.TestCase):
-    """Verify read_session_key follows symlinks and checks target permissions."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.real_path = os.path.join(self.tmpdir, "real-key.json")
-        self.link_path = os.path.join(self.tmpdir, "key-link.json")
-
-    def tearDown(self):
-        for p in [self.link_path, self.real_path]:
-            if os.path.exists(p) or os.path.islink(p):
-                try:
-                    os.chmod(p, 0o600)
-                except OSError:
-                    pass
-                os.remove(p)
-        os.rmdir(self.tmpdir)
-
-    def test_symlink_to_valid_key_file(self):
-        """Symlink to a valid key file with correct permissions works."""
-        with open(self.real_path, "w") as f:
-            json.dump({"sessionKey": "sk-symlink-test"}, f)
-        os.chmod(self.real_path, 0o600)
-        os.symlink(self.real_path, self.link_path)
-
-        result = read_session_key(self.link_path)
-        self.assertEqual(result["sessionKey"], "sk-symlink-test")
-
-    def test_symlink_to_dangling_target(self):
-        """Symlink to nonexistent target returns no_key error."""
-        os.symlink("/nonexistent/target", self.link_path)
-        result = read_session_key(self.link_path)
-        self.assertEqual(result["error"], "no_key")
 
 
 # ---------------------------------------------------------------------------
