@@ -188,6 +188,13 @@ if [ -d "$CONFIG_DIR" ]; then
         ok "Config removed"
     else
         info "Configuration preserved at $CONFIG_DIR"
+        # Never leave a credential behind in a directory the user chose to keep.
+        if [ -f "$CONFIG_DIR/claude-usage-key.json" ]; then
+            if ask_yn "Remove the unused claude.ai session key?"; then
+                rm -f "$CONFIG_DIR/claude-usage-key.json"
+                ok "Session key removed"
+            fi
+        fi
     fi
 fi
 

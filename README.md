@@ -219,7 +219,8 @@ The overlay is sourced at the end of your tmux.conf, so it wins on status-bar op
 - **node** (used by the Claude Code statusLine hook)
 
 **Optional** (for quota display):
-- **curl_cffi** (`pip3 install curl-cffi`) — needed by the quota server
+- **claude** — the Claude Code CLI, logged in. The quota server reads usage from
+  it directly, so there is no API key or session key to configure.
 
 Works on both **macOS** and **Linux**.
 
@@ -261,9 +262,9 @@ Line 0 of the status bar shows Claude Code session metadata. There are three dat
 - Without the hook, context % shows 0%
 
 **Quota bars** (optional, requires setup):
-- Quota display shows 5-hour and 7-day API utilization from claude.ai
+- Quota display shows 5-hour and 7-day utilization, read from the Claude CLI's own `/usage` screen
 - The installer runs an HTTP quota server locally at `localhost:7850`; other machines can point at it as clients
-- Only requires a session key file and `curl_cffi` on the server machine
+- Requires only a logged-in `claude` CLI on the server machine — no session key, no API key
 - Without it, quota bars are simply omitted from the display
 
 #### Codex
@@ -289,31 +290,28 @@ When the active pane isn't running either agent, line 0 is empty (a blank spacer
 
 ### Claude Quota Display Setup (Optional)
 
-Claude's quota system uses an HTTP server that scrapes claude.ai and serves data
-to the status bar renderer. The installer sets this up automatically on
+Claude's quota system uses an HTTP server that reads usage from the Claude CLI and
+serves it to the status bar renderer. The installer sets this up automatically on
 `localhost:7850`. Codex quota never uses this server.
 
-#### 1. Install curl_cffi (server machine only)
+#### 1. Log in to the Claude CLI (server machine only)
 
 ```bash
-pip3 install curl-cffi
+claude auth   # or just run `claude` once and sign in
 ```
 
-#### 2. Create a session key file
+That is the entire setup. Every ~300s the server boots `claude` headless inside its
+own private tmux socket, opens the `/usage` screen, reads the numbers off it, and
+tears the session down. Because it reuses the CLI's own login there is **no session
+key to mint, rotate, or have silently revoked** — the failure mode of the previous
+claude.ai scraper, which showed up as `X` in the status bar whenever a browser
+logout invalidated the key.
 
-At `~/.config/tmux-status/claude-usage-key.json` (permissions must be `600`):
+The capture is isolated on purpose: it never touches your default tmux server, so
+it cannot appear in your window list, consume your tmux server's file descriptors,
+or be reaped by `tmux-status-prune-clients`.
 
-```json
-{"sessionKey": "sk-ant-...", "expiresAt": "2026-05-01T00:00:00Z"}
-```
-
-Get your session key from your browser's cookies on claude.ai (the `sessionKey` cookie).
-
-```bash
-chmod 600 ~/.config/tmux-status/claude-usage-key.json
-```
-
-#### 3. Verify
+#### 2. Verify
 
 ```bash
 curl -s http://127.0.0.1:7850/health   # {"status":"ok",...}
@@ -340,7 +338,7 @@ and the steady 5s interval is unchanged.
 
 #### Client Mode (multiple machines)
 
-To show quota on machines that don't have the session key, point them at a central server. On each **client** machine, edit `~/.config/tmux-status/settings.conf`:
+To show quota on machines without a logged-in Claude CLI, point them at a central server. On each **client** machine, edit `~/.config/tmux-status/settings.conf`:
 
 ```bash
 QUOTA_SOURCE=http://<server-ip>:7850
@@ -348,7 +346,7 @@ QUOTA_API_KEY=my-secret-key        # if server requires auth
 QUOTA_CACHE_TTL=30                 # seconds; reduces requests over network
 ```
 
-Clients don't need `curl_cffi` or the session key — they only need `tmux-status` installed.
+Clients don't need the Claude CLI — they only need `tmux-status` installed. Note the served numbers reflect the **server machine's** Claude login.
 
 On the **server** machine, re-run the installer with `--server`:
 
