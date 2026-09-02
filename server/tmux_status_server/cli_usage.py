@@ -27,11 +27,13 @@ would be detached and transport-reaped by ``tmux-status-prune-clients``.
 where lines break, and therefore whether the golden fixtures still match.
 """
 
+import json
 import logging
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
@@ -99,10 +101,75 @@ _LOGIN_MARKERS = (
 # not use the "effort:" hint — it is transient and clears after ~10s.
 _READY_MARKER = "shift+tab"
 
+# The CLI refuses to open a workspace it has not been told to trust. launchd
+# runs the daemon with cwd=/, which is untrusted, so the capture session sits
+# on this prompt forever. Detected so it reports its real cause instead of an
+# opaque boot timeout. Never auto-answered: trusting a directory is the user's
+# security decision, not the daemon's.
+_TRUST_PROMPT_MARKERS = (
+    "Permission Required: Accessing workspace",
+    "Is this a project you created or one you trust",
+)
+
+_CLAUDE_CONFIG = "~/.claude.json"
+
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+
+
+def _is_safe_cwd(path):
+    """True when *path* is a directory this user owns and others cannot write.
+
+    The CLI reads CLAUDE.md and settings from its working directory, so a
+    world-writable or foreign-owned directory is an instruction-injection
+    surface, not merely untidy.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    if st.st_uid != os.getuid():
+        return False
+    return not st.st_mode & stat.S_IWOTH
+
+
+def default_usage_cwd(config_path=None):
+    """Pick a working directory the CLI will not raise a trust prompt for.
+
+    The daemon inherits launchd's cwd (``/``), which is untrusted. Claude
+    records the directories the user has accepted in ``~/.claude.json`` under
+    ``projects[dir].hasTrustDialogAccepted``. Candidates must also be owned by
+    this user and not world-writable: the CLI reads ``CLAUDE.md`` and settings
+    from its working directory, so a world-writable one (``/tmp``) would let
+    any local process feed instructions into the capture session. Among what
+    survives, the shortest path wins, since that tends to be a stable parent
+    rather than a scratch checkout.
+
+    This reads an undocumented file on purpose, so it degrades rather than
+    breaks: any missing, malformed, or reshaped config falls back to ``$HOME``,
+    and if that also prompts, the prompt is detected and named.
+    """
+    home = os.path.expanduser("~")
+    path = os.path.expanduser(config_path or _CLAUDE_CONFIG)
+    try:
+        with open(path) as f:
+            projects = json.load(f).get("projects", {})
+        trusted = [
+            d for d, meta in projects.items()
+            if isinstance(meta, dict)
+            and meta.get("hasTrustDialogAccepted")
+            and _is_safe_cwd(d)
+        ]
+        if trusted:
+            # Sort by (length, name) so the choice is stable across runs.
+            return sorted(trusted, key=lambda d: (len(d), d))[0]
+    except (OSError, ValueError, AttributeError, TypeError):
+        logger.debug("Could not read trusted dirs from %s", path, exc_info=True)
+    return home
 
 
 def search_path():
@@ -363,7 +430,7 @@ class HeadlessClaudeSession:
                  boot_timeout=DEFAULT_BOOT_TIMEOUT,
                  screen_timeout=DEFAULT_SCREEN_TIMEOUT):
         self.socket_name = socket_name
-        self.cwd = cwd
+        self.cwd = cwd or default_usage_cwd()
         self.width = width
         self.height = height
         self.boot_timeout = boot_timeout
@@ -455,12 +522,18 @@ class HeadlessClaudeSession:
             UsageError: ``cli_boot_timeout`` if the TUI never came up,
                 ``usage_screen_timeout`` if the Usage sections never rendered.
         """
-        ready_screen = self._wait_for(
-            self.is_ready, self.boot_timeout, "cli_boot_timeout"
-        )
-        # Fail fast on an unauthenticated CLI rather than waiting out the full
-        # screen timeout for a Usage view that will never render.
-        self._raise_if_unauthenticated(ready_screen)
+        # The trust prompt never reaches the ready state, so it has to be
+        # checked while waiting rather than after.
+        try:
+            ready_screen = self._wait_for(
+                self.is_ready, self.boot_timeout, "cli_boot_timeout"
+            )
+        except UsageError:
+            self._raise_if_blocked(self._capture())
+            raise
+        # Fail fast on a blocked CLI rather than waiting out the full screen
+        # timeout for a Usage view that will never render.
+        self._raise_if_blocked(ready_screen)
         self._send_usage_command()
 
         # Re-send once if the view never opened: a keystroke can still be lost
@@ -479,8 +552,20 @@ class HeadlessClaudeSession:
             return self._wait_for(self.shows_usage, remaining, "usage_screen_timeout")
 
     @staticmethod
-    def _raise_if_unauthenticated(screen):
-        """Raise ``cli_not_authenticated`` when the CLI reports no login."""
+    def _raise_if_blocked(screen):
+        """Raise a named error when the CLI is showing a blocking state.
+
+        Both cases render a perfectly normal-looking TUI that will simply never
+        reach the Usage view, so without this they surface as a timeout naming
+        the wrong cause.
+        """
+        for marker in _TRUST_PROMPT_MARKERS:
+            if marker in screen:
+                raise UsageError(
+                    "cli_workspace_untrusted",
+                    "CLI is asking to trust its working directory; "
+                    "point --usage-cwd at a directory you have already trusted",
+                )
         for marker in _LOGIN_MARKERS:
             if marker in screen:
                 raise UsageError("cli_not_authenticated", f"CLI reports: {marker!r}")

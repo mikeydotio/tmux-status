@@ -21,6 +21,8 @@ from tmux_status_server.cli_usage import (  # noqa: E402
     ResetSpec,
     UsageError,
     UsageScreenParser,
+    _is_safe_cwd,
+    default_usage_cwd,
     search_path,
     error_bridge,
 )
@@ -346,7 +348,7 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         )
         self.assertTrue(HeadlessClaudeSession.is_ready(screen))
         with self.assertRaises(UsageError) as ctx:
-            HeadlessClaudeSession._raise_if_unauthenticated(screen)
+            HeadlessClaudeSession._raise_if_blocked(screen)
         self.assertEqual(ctx.exception.code, "cli_not_authenticated")
 
     def test_authenticated_screen_passes_through(self):
@@ -354,7 +356,32 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
             "Opus 5 (1M context) with high effort · Claude Max\n"
             "plan mode on (shift+tab to cycle)\n"
         )
-        HeadlessClaudeSession._raise_if_unauthenticated(screen)  # must not raise
+        HeadlessClaudeSession._raise_if_blocked(screen)  # must not raise
+
+    def test_workspace_trust_prompt_is_named_not_timed_out(self):
+        # Regression: launchd runs the daemon with cwd=/, which the CLI treats
+        # as untrusted. It shows this prompt, never reaches ready, and the
+        # collector reported an opaque cli_boot_timeout after 45s.
+        screen = (
+            "[Screen Reader Mode: on via flag]\n"
+            "Permission Required: Accessing workspace:\n"
+            "/\n"
+            "Quick safety check: Is this a project you created or one you trust?\n"
+            "y. Yes, I trust this folder\n"
+            "n. No, exit\n"
+            "Enter y/n:\n"
+        )
+        with self.assertRaises(UsageError) as ctx:
+            HeadlessClaudeSession._raise_if_blocked(screen)
+        self.assertEqual(ctx.exception.code, "cli_workspace_untrusted")
+
+    def test_trust_prompt_is_never_auto_answered(self):
+        # Trusting a directory is the user's security decision, not ours.
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..",
+                         "tmux_status_server", "cli_usage.py")
+        ).read()
+        self.assertNotIn('send-keys", "-t", "0", "y"', source)
 
     def test_usage_view_detection(self):
         self.assertTrue(
@@ -431,6 +458,92 @@ class TestBinaryResolutionUnderMinimalPath(unittest.TestCase):
             with HeadlessClaudeSession(socket_name="test-sock") as s:
                 self.assertTrue(os.path.isabs(s.tmux_bin))
                 self.assertTrue(os.path.isabs(s.claude_bin))
+
+
+class TestDefaultUsageCwd(unittest.TestCase):
+    """The capture must start in a directory the CLI will not prompt about."""
+
+    def _config(self, payload):
+        import tempfile, json as _json
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, ".claude.json")
+        with open(path, "w") as f:
+            _json.dump(payload, f)
+        return path
+
+    def test_prefers_a_trusted_directory(self):
+        cfg = self._config({"projects": {
+            "/nonexistent/gone": {"hasTrustDialogAccepted": True},
+            os.getcwd(): {"hasTrustDialogAccepted": True},
+        }})
+        self.assertEqual(default_usage_cwd(config_path=cfg), os.getcwd())
+
+    def test_ignores_untrusted_entries(self):
+        cfg = self._config({"projects": {
+            os.getcwd(): {"hasTrustDialogAccepted": False},
+        }})
+        # No trusted candidate -> HOME, even though HOME may itself prompt;
+        # the trust prompt is then detected and named rather than timing out.
+        self.assertEqual(default_usage_cwd(config_path=cfg),
+                         os.path.expanduser("~"))
+
+    def test_ignores_directories_that_no_longer_exist(self):
+        cfg = self._config({"projects": {
+            "/nonexistent/gone": {"hasTrustDialogAccepted": True},
+        }})
+        self.assertEqual(default_usage_cwd(config_path=cfg),
+                         os.path.expanduser("~"))
+
+    def test_missing_config_falls_back_to_home(self):
+        self.assertEqual(default_usage_cwd(config_path="/nonexistent/.claude.json"),
+                         os.path.expanduser("~"))
+
+    def test_malformed_config_falls_back_to_home(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, ".claude.json")
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.assertEqual(default_usage_cwd(config_path=path),
+                         os.path.expanduser("~"))
+
+    def test_selection_is_deterministic(self):
+        cfg = self._config({"projects": {
+            os.getcwd(): {"hasTrustDialogAccepted": True},
+            os.path.dirname(os.getcwd()): {"hasTrustDialogAccepted": True},
+        }})
+        self.assertEqual(default_usage_cwd(config_path=cfg),
+                         default_usage_cwd(config_path=cfg))
+
+    def test_world_writable_directory_is_rejected(self):
+        # The CLI reads CLAUDE.md and settings from its cwd, so a world-writable
+        # one lets any local process inject instructions into the capture.
+        import tempfile, stat as _stat
+        d = tempfile.mkdtemp()
+        os.chmod(d, 0o777)
+        self.assertFalse(_is_safe_cwd(d))
+        cfg = self._config({"projects": {d: {"hasTrustDialogAccepted": True}}})
+        self.assertNotEqual(default_usage_cwd(config_path=cfg), d)
+
+    def test_user_owned_private_directory_is_accepted(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        os.chmod(d, 0o755)
+        self.assertTrue(_is_safe_cwd(d))
+
+    def test_nonexistent_path_is_rejected(self):
+        self.assertFalse(_is_safe_cwd("/nonexistent/nope"))
+
+    def test_file_is_not_a_valid_cwd(self):
+        import tempfile
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        self.assertFalse(_is_safe_cwd(path))
+
+    def test_session_uses_the_default_when_no_cwd_given(self):
+        session = HeadlessClaudeSession()
+        self.assertTrue(session.cwd, "capture must not inherit launchd's cwd (/)")
+        self.assertNotEqual(str(session.cwd), "/")
 
 
 class TestReap(unittest.TestCase):
