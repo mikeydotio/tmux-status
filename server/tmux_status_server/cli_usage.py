@@ -41,6 +41,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
+# The daemon runs under launchd (macOS) / systemd (Linux), whose PATH omits
+# both Homebrew and ~/.local/bin. Resolving `tmux` or `claude` against the
+# inherited PATH alone returns None there and every collection fails. Mirrors
+# render.py's _EXTRA_PATH, plus ~/.local/bin, where `claude` installs.
+_EXTRA_PATH = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "~/.local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+]
+
 DEFAULT_SOCKET = "tmux-status-usage"
 DEFAULT_WIDTH = 120
 DEFAULT_HEIGHT = 45
@@ -73,6 +87,10 @@ _LOGIN_MARKERS = (
     "Select login method",
     "Welcome to Claude Code",
     "Anthropic Console account",
+    # The TUI can boot fully and still be unauthenticated, showing this in the
+    # footer. Without it the collector waits out the whole screen timeout and
+    # reports an opaque usage_screen_timeout instead of naming the real cause.
+    "Not logged in",
 )
 
 # The input-mode footer, which appears only once the input box accepts
@@ -85,6 +103,17 @@ _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+
+
+def search_path():
+    """Return PATH augmented with the bin dirs launchd/systemd omit.
+
+    Never mutates ``os.environ``: the collector runs on the server's poll
+    thread, and a global mutation there would race the rest of the process.
+    """
+    current = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    extra = [os.path.expanduser(d) for d in _EXTRA_PATH]
+    return os.pathsep.join([d for d in extra if d not in current] + current)
 
 
 class UsageError(Exception):
@@ -341,19 +370,25 @@ class HeadlessClaudeSession:
         self.screen_timeout = screen_timeout
         self._started = False
         self._pane_pid = None
+        self.tmux_bin = "tmux"
+        self.claude_bin = "claude"
 
     def __enter__(self):
         """Start the isolated tmux server and boot the CLI inside it."""
-        if shutil.which("tmux") is None:
-            raise UsageError("tmux_unavailable", "tmux not on PATH")
-        claude = shutil.which("claude")
+        path = search_path()
+        tmux = shutil.which("tmux", path=path)
+        if tmux is None:
+            raise UsageError("tmux_unavailable", f"tmux not found on {path}")
+        claude = shutil.which("claude", path=path)
         if claude is None:
-            raise UsageError("cli_not_found", "claude not on PATH")
+            raise UsageError("cli_not_found", f"claude not found on {path}")
+        self.tmux_bin = tmux
+        self.claude_bin = claude
 
         # Any survivor from a previous crashed run would serve a stale screen.
         self._tmux("kill-server", check=False)
 
-        command = f"{claude} --ax-screen-reader --permission-mode plan"
+        command = f"{self.claude_bin} --ax-screen-reader --permission-mode plan"
         args = ["new-session", "-d", "-x", str(self.width), "-y", str(self.height)]
         if self.cwd:
             args += ["-c", str(self.cwd)]
@@ -420,7 +455,12 @@ class HeadlessClaudeSession:
             UsageError: ``cli_boot_timeout`` if the TUI never came up,
                 ``usage_screen_timeout`` if the Usage sections never rendered.
         """
-        self._wait_for(self.is_ready, self.boot_timeout, "cli_boot_timeout")
+        ready_screen = self._wait_for(
+            self.is_ready, self.boot_timeout, "cli_boot_timeout"
+        )
+        # Fail fast on an unauthenticated CLI rather than waiting out the full
+        # screen timeout for a Usage view that will never render.
+        self._raise_if_unauthenticated(ready_screen)
         self._send_usage_command()
 
         # Re-send once if the view never opened: a keystroke can still be lost
@@ -437,6 +477,13 @@ class HeadlessClaudeSession:
                 self._send_usage_command()
             remaining = max(_POLL_INTERVAL, deadline - time.monotonic())
             return self._wait_for(self.shows_usage, remaining, "usage_screen_timeout")
+
+    @staticmethod
+    def _raise_if_unauthenticated(screen):
+        """Raise ``cli_not_authenticated`` when the CLI reports no login."""
+        for marker in _LOGIN_MARKERS:
+            if marker in screen:
+                raise UsageError("cli_not_authenticated", f"CLI reports: {marker!r}")
 
     @staticmethod
     def is_ready(screen):
@@ -474,12 +521,15 @@ class HeadlessClaudeSession:
 
     def _tmux(self, *args, check=True):
         """Run one tmux command against this session's private socket."""
+        # tmux spawns the CLI through a shell, so the augmented PATH has to
+        # reach the child too, not just our own which() lookups.
         return subprocess.run(
-            ["tmux", "-L", self.socket_name, *args],
+            [self.tmux_bin, "-L", self.socket_name, *args],
             capture_output=True,
             text=True,
             check=check,
             timeout=30,
+            env={**os.environ, "PATH": search_path()},
         )
 
 

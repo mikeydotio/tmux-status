@@ -21,6 +21,7 @@ from tmux_status_server.cli_usage import (  # noqa: E402
     ResetSpec,
     UsageError,
     UsageScreenParser,
+    search_path,
     error_bridge,
 )
 
@@ -334,6 +335,27 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         # "effort: high · /effort" clears after ~10s, so it cannot gate readiness.
         self.assertFalse(HeadlessClaudeSession.is_ready("effort: high · /effort\n"))
 
+    def test_booted_but_unauthenticated_is_named_not_timed_out(self):
+        # The TUI can boot fully and still be logged out, showing this in the
+        # footer. Waiting out the screen timeout would report the wrong cause.
+        screen = (
+            "Claude Code v2.1.258\n"
+            "Opus 5 (1M context) with high effort · API Usage Billing\n"
+            "plan mode on (shift+tab to cycle)\n"
+            "Not logged in · Run /login\n"
+        )
+        self.assertTrue(HeadlessClaudeSession.is_ready(screen))
+        with self.assertRaises(UsageError) as ctx:
+            HeadlessClaudeSession._raise_if_unauthenticated(screen)
+        self.assertEqual(ctx.exception.code, "cli_not_authenticated")
+
+    def test_authenticated_screen_passes_through(self):
+        screen = (
+            "Opus 5 (1M context) with high effort · Claude Max\n"
+            "plan mode on (shift+tab to cycle)\n"
+        )
+        HeadlessClaudeSession._raise_if_unauthenticated(screen)  # must not raise
+
     def test_usage_view_detection(self):
         self.assertTrue(
             HeadlessClaudeSession.shows_usage("Current week (all models)\n4% used\n")
@@ -344,6 +366,71 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         # Wrapping width is contractual: fixtures only match at 120x45.
         session = HeadlessClaudeSession()
         self.assertEqual((session.width, session.height), (120, 45))
+
+
+class TestBinaryResolutionUnderMinimalPath(unittest.TestCase):
+    """Regression: the daemon runs under launchd/systemd with a minimal PATH.
+
+    launchd does not export /opt/homebrew/bin (tmux) or ~/.local/bin (claude),
+    so resolving either against the inherited PATH alone returns None and every
+    collection fails with tmux_unavailable. render.py:54 already solves this
+    with _EXTRA_PATH; the collector must do the same.
+    """
+
+    LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+    def test_search_path_adds_homebrew(self):
+        with mock.patch.dict(os.environ, {"PATH": self.LAUNCHD_PATH}, clear=False):
+            self.assertIn("/opt/homebrew/bin", search_path().split(os.pathsep))
+
+    def test_search_path_adds_user_local_bin(self):
+        # `claude` installs to ~/.local/bin, which render.py's list omits.
+        with mock.patch.dict(os.environ, {"PATH": self.LAUNCHD_PATH}, clear=False):
+            self.assertIn(
+                os.path.expanduser("~/.local/bin"), search_path().split(os.pathsep)
+            )
+
+    def test_search_path_preserves_and_does_not_duplicate_existing(self):
+        with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin"}):
+            parts = search_path().split(os.pathsep)
+            self.assertIn("/usr/bin", parts)
+            self.assertEqual(parts.count("/opt/homebrew/bin"), 1)
+
+    def test_which_is_queried_with_the_augmented_path(self):
+        # The bug was calling shutil.which() with no path= argument.
+        with mock.patch("shutil.which", return_value="/stub/bin/x") as which, \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(socket_name="test-sock"):
+                pass
+            for call in which.call_args_list:
+                self.assertIn(
+                    "path", call.kwargs,
+                    f"shutil.which({call.args[0]!r}) ignored the augmented PATH",
+                )
+                self.assertIn("/opt/homebrew/bin", call.kwargs["path"])
+
+    def test_subprocess_env_carries_the_augmented_path(self):
+        # tmux spawns the CLI through a shell, which needs to resolve it too.
+        with mock.patch("shutil.which", return_value="/stub/bin/x"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            with HeadlessClaudeSession(socket_name="test-sock"):
+                pass
+            self.assertTrue(run.call_args_list, "no subprocess calls made")
+            for call in run.call_args_list:
+                env = call.kwargs.get("env")
+                self.assertIsNotNone(env, "tmux invoked without an explicit env")
+                self.assertIn("/opt/homebrew/bin", env["PATH"])
+
+    def test_resolved_binaries_are_absolute(self):
+        with mock.patch("shutil.which", return_value="/opt/homebrew/bin/tmux"), \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(socket_name="test-sock") as s:
+                self.assertTrue(os.path.isabs(s.tmux_bin))
+                self.assertTrue(os.path.isabs(s.claude_bin))
 
 
 class TestReap(unittest.TestCase):
