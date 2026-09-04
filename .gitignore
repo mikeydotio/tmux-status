@@ -22,3 +22,6 @@ server/build/
 # produces "No url found for submodule path" warnings in CI checkout.
 .claude/worktrees/
 .claude/dispatch-sentinel.json
+
+# story per-story git worktrees (ephemeral — never commit)
+.codex/worktrees/
