@@ -378,10 +378,11 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
 
     def test_trust_prompt_is_never_auto_answered(self):
         # Trusting a directory is the user's security decision, not ours.
-        source = open(
-            os.path.join(os.path.dirname(__file__), "..",
-                         "tmux_status_server", "cli_usage.py")
-        ).read()
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "tmux_status_server", "cli_usage.py"
+        )
+        with open(path) as f:
+            source = f.read()
         self.assertNotIn('send-keys", "-t", "0", "y"', source)
 
     def test_usage_view_detection(self):
