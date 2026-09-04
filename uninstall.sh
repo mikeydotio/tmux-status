@@ -25,7 +25,37 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 # ── Helpers ────────────────────────────────────────────────────
 info()  { printf '\033[1;34m[tmux-status]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[1;33m[tmux-status]\033[0m %s\n' "$1"; }
+error() { printf '\033[1;31m[tmux-status]\033[0m %s\n' "$1" >&2; }
 ok()    { printf '\033[1;32m[tmux-status]\033[0m %s\n' "$1"; }
+
+cleanup_server_environments() {
+    local fallback_venv="${1:-$HOME/.local/share/tmux-status/venv}"
+    local pipx_home pipx_venv
+
+    if command -v pipx >/dev/null 2>&1; then
+        if ! pipx_home=$(pipx environment --value PIPX_HOME 2>/dev/null) || [ -z "$pipx_home" ]; then
+            error "Could not resolve PIPX_HOME; the pipx environment was not removed."
+            return 1
+        fi
+        pipx_venv="$pipx_home/venvs/tmux-status-server"
+        if [ -d "$pipx_venv" ]; then
+            if ! pipx uninstall tmux-status-server; then
+                error "Could not remove pipx environment: $pipx_venv"
+                return 1
+            fi
+            info "Removed pipx environment: $pipx_venv"
+        fi
+    fi
+
+    if [ -d "$fallback_venv" ]; then
+        if [ ! -f "$fallback_venv/pyvenv.cfg" ] || [ ! -f "$fallback_venv/bin/tmux-status-server" ]; then
+            error "Refusing to remove unrecognized server environment: $fallback_venv"
+            return 1
+        fi
+        rm -rf "$fallback_venv"
+        info "Removed server environment: $fallback_venv"
+    fi
+}
 
 # Check if stdin is a terminal (interactive mode)
 is_interactive() {
@@ -117,7 +147,7 @@ done
 
 # ── Uninstall server package ──────────────────────────────────
 info "Uninstalling tmux-status-server package..."
-pip3 uninstall -y tmux-status-server 2>/dev/null || true
+cleanup_server_environments || exit 1
 ok "Server package uninstall complete"
 
 # ── Remove symlinks from ~/.local/bin/ ─────────────────────────
