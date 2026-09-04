@@ -223,6 +223,7 @@ def main():
             socket_name=args.usage_socket,
             cwd=args.usage_cwd,
             boot_timeout=args.boot_timeout,
+            inherit_auth_env=args.usage_inherit_auth_env,
         )
 
     server = QuotaServer(

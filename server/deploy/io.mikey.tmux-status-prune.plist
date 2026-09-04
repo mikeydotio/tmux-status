@@ -21,5 +21,9 @@
     <integer>1800</integer>
     <key>RunAtLoad</key>
     <false/>
+    <key>StandardOutPath</key>
+    <string>~/Library/Logs/tmux-status/io.mikey.tmux-status-prune.log</string>
+    <key>StandardErrorPath</key>
+    <string>~/Library/Logs/tmux-status/io.mikey.tmux-status-prune.log</string>
 </dict>
 </plist>

@@ -1,6 +1,7 @@
 """Tests for deployment files — systemd unit, launchd plist, and Dockerfile."""
 
 import os
+import plistlib
 import sys
 import unittest
 import xml.etree.ElementTree as ET
@@ -11,6 +12,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Root of the server/ directory
 SERVER_DIR = os.path.join(os.path.dirname(__file__), "..")
 DEPLOY_DIR = os.path.join(SERVER_DIR, "deploy")
+REPO_DIR = os.path.abspath(os.path.join(SERVER_DIR, ".."))
+
+LAUNCHD_LABELS = (
+    "io.mikey.tmux-status-server",
+    "io.mikey.tmux-status-renderd",
+    "io.mikey.tmux-status-prune",
+)
 
 
 class TestSystemdServiceExists(unittest.TestCase):
@@ -206,6 +214,48 @@ class TestLaunchdPlistBehavior(unittest.TestCase):
         next_key_search = after[len("<key>KeepAlive</key>"):true_pos]
         self.assertNotIn("<key>", next_key_search)
 
+
+class TestLaunchdLogging(unittest.TestCase):
+    """Every launch agent must preserve stdout and stderr for diagnosis."""
+
+    def test_each_agent_logs_both_streams_to_its_own_file(self):
+        """Templates route both streams to a distinct per-agent log."""
+        paths = set()
+        for label in LAUNCHD_LABELS:
+            path = os.path.join(DEPLOY_DIR, f"{label}.plist")
+            with open(path, "rb") as f:
+                plist = plistlib.load(f)
+
+            expected = f"~/Library/Logs/tmux-status/{label}.log"
+            self.assertEqual(plist.get("StandardOutPath"), expected)
+            self.assertEqual(plist.get("StandardErrorPath"), expected)
+            paths.add(expected)
+
+        self.assertEqual(len(paths), len(LAUNCHD_LABELS))
+
+    def test_installer_creates_and_absolutizes_log_paths(self):
+        """launchd receives existing parent directories and absolute paths."""
+        with open(os.path.join(REPO_DIR, "install.sh")) as f:
+            source = f.read()
+
+        self.assertIn('LAUNCHD_LOG_DIR="$HOME/Library/Logs/tmux-status"', source)
+        self.assertIn('mkdir -p "$LAUNCHD_LOG_DIR"', source)
+        self.assertIn(
+            'for key in ("StandardOutPath", "StandardErrorPath"):', source
+        )
+        self.assertEqual(source.count("absolutize_launchd_log_paths \"$"), 3)
+
+
+class TestInstallerUsageAuthentication(unittest.TestCase):
+    """The installer persists the server's auth-environment opt-out."""
+
+    def test_installer_accepts_and_forwards_inherit_auth_flag(self):
+        """Both launchd and systemd receive the selected server argument."""
+        with open(os.path.join(REPO_DIR, "install.sh")) as f:
+            source = f.read()
+
+        self.assertIn("--usage-inherit-auth-env)", source)
+        self.assertIn('_server_args="$_server_args --usage-inherit-auth-env"', source)
 
 class TestDockerfileExists(unittest.TestCase):
     """Test that the Dockerfile exists."""

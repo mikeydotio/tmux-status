@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -63,6 +64,23 @@ DEFAULT_HEIGHT = 45
 DEFAULT_BOOT_TIMEOUT = 45.0
 DEFAULT_SCREEN_TIMEOUT = 30.0
 _POLL_INTERVAL = 0.5
+
+# Claude Code authentication precedence puts provider selectors and explicit
+# credentials ahead of the subscription login. The collector measures the
+# subscription's rate-limit windows, so a shell startup file must not be able
+# to silently select a different billing identity after tmux starts the pane.
+# CLAUDE_CONFIG_DIR is intentionally preserved: it selects the user's actual
+# credential store rather than overriding the credential within that store.
+_AUTH_OVERRIDE_VARS = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -100,6 +118,18 @@ _LOGIN_MARKERS = (
 # that window are silently dropped. Do not key readiness off the banner, and do
 # not use the "effort:" hint — it is transient and clears after ~10s.
 _READY_MARKER = "shift+tab"
+
+# An echoed slash command alone only proves that Enter was accepted. The
+# cancel footer and complete tab row prove that the Usage view itself opened.
+_USAGE_VIEW_MARKERS = (
+    "you: /usage",
+    "Settings",
+    "Status",
+    "Config",
+    "Usage",
+    "Stats",
+    "Esc to cancel",
+)
 
 # The CLI refuses to open a workspace it has not been told to trust. launchd
 # runs the daemon with cwd=/, which is untrusted, so the capture session sits
@@ -428,13 +458,15 @@ class HeadlessClaudeSession:
     def __init__(self, socket_name=DEFAULT_SOCKET, cwd=None,
                  width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
                  boot_timeout=DEFAULT_BOOT_TIMEOUT,
-                 screen_timeout=DEFAULT_SCREEN_TIMEOUT):
+                 screen_timeout=DEFAULT_SCREEN_TIMEOUT,
+                 inherit_auth_env=False):
         self.socket_name = socket_name
         self.cwd = cwd or default_usage_cwd()
         self.width = width
         self.height = height
         self.boot_timeout = boot_timeout
         self.screen_timeout = screen_timeout
+        self.inherit_auth_env = inherit_auth_env
         self._started = False
         self._pane_pid = None
         self.tmux_bin = "tmux"
@@ -455,7 +487,15 @@ class HeadlessClaudeSession:
         # Any survivor from a previous crashed run would serve a stale screen.
         self._tmux("kill-server", check=False)
 
-        command = f"{self.claude_bin} --ax-screen-reader --permission-mode plan"
+        command_parts = []
+        if not self.inherit_auth_env:
+            command_parts.append("/usr/bin/env")
+            for name in _AUTH_OVERRIDE_VARS:
+                command_parts.extend(("-u", name))
+        command_parts.extend(
+            (self.claude_bin, "--ax-screen-reader", "--permission-mode", "plan")
+        )
+        command = " ".join(shlex.quote(part) for part in command_parts)
         args = ["new-session", "-d", "-x", str(self.width), "-y", str(self.height)]
         if self.cwd:
             args += ["-c", str(self.cwd)]
@@ -520,7 +560,9 @@ class HeadlessClaudeSession:
 
         Raises:
             UsageError: ``cli_boot_timeout`` if the TUI never came up,
-                ``usage_screen_timeout`` if the Usage sections never rendered.
+                ``usage_screen_timeout`` if the Usage view never opened, or
+                ``usage_no_limit_windows`` if it opened without subscription
+                limit sections.
         """
         # The trust prompt never reaches the ready state, so it has to be
         # checked while waiting rather than after.
@@ -542,7 +584,10 @@ class HeadlessClaudeSession:
         deadline = time.monotonic() + self.screen_timeout
         try:
             return self._wait_for(
-                self.shows_usage, self.screen_timeout / 2, "usage_screen_timeout"
+                self.shows_usage,
+                self.screen_timeout / 2,
+                "usage_screen_timeout",
+                warn_on_timeout=False,
             )
         except UsageError:
             if self.is_ready(self._capture()):
@@ -580,6 +625,27 @@ class HeadlessClaudeSession:
         """True once the Usage view has rendered its window sections."""
         return _WEEK_HEADING in screen
 
+    @staticmethod
+    def shows_usage_view(screen):
+        """True once the complete Usage dialog is demonstrably open."""
+        return all(marker in screen for marker in _USAGE_VIEW_MARKERS)
+
+    @classmethod
+    def _marker_summary(cls, screen):
+        """Return non-sensitive screen-state markers for timeout logs."""
+        markers = {
+            "ready": cls.is_ready(screen),
+            "login": any(marker in screen for marker in _LOGIN_MARKERS),
+            "trust": any(marker in screen for marker in _TRUST_PROMPT_MARKERS),
+            "usage_dialog": cls.shows_usage_view(screen),
+            "session_heading": _SESSION_HEADING in screen,
+            "week_heading": _WEEK_HEADING in screen,
+        }
+        return " ".join(
+            f"{name}={'yes' if present else 'no'}"
+            for name, present in markers.items()
+        )
+
     def _send_usage_command(self):
         """Type ``/usage`` and commit it."""
         self._tmux("send-keys", "-t", "0", "/usage")
@@ -587,7 +653,7 @@ class HeadlessClaudeSession:
         time.sleep(1.0)
         self._tmux("send-keys", "-t", "0", "Enter")
 
-    def _wait_for(self, predicate, timeout, error_code):
+    def _wait_for(self, predicate, timeout, error_code, warn_on_timeout=True):
         """Poll ``capture-pane`` until ``predicate`` holds or the timeout expires."""
         deadline = time.monotonic() + timeout
         screen = ""
@@ -596,8 +662,21 @@ class HeadlessClaudeSession:
             if predicate(screen):
                 return screen
             time.sleep(_POLL_INTERVAL)
-        logger.debug("Timed out (%s); last screen:\n%s", error_code, screen)
-        raise UsageError(error_code, f"timed out after {timeout}s")
+        actual_error = error_code
+        if (
+            error_code == "usage_screen_timeout"
+            and self.shows_usage_view(screen)
+            and not self.shows_usage(screen)
+        ):
+            actual_error = "usage_no_limit_windows"
+        if warn_on_timeout:
+            logger.warning(
+                "Timed out (%s); screen markers: %s",
+                actual_error,
+                self._marker_summary(screen),
+            )
+        logger.debug("Timed out (%s); last screen:\n%s", actual_error, screen)
+        raise UsageError(actual_error, f"timed out after {timeout}s")
 
     def _capture(self):
         """Return the pane's visible text, or empty string if unavailable."""

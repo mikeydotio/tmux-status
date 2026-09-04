@@ -21,6 +21,7 @@ from tmux_status_server.cli_usage import (  # noqa: E402
     ResetSpec,
     UsageError,
     UsageScreenParser,
+    _AUTH_OVERRIDE_VARS,
     _is_safe_cwd,
     default_usage_cwd,
     search_path,
@@ -53,6 +54,13 @@ class TestParseNominal(unittest.TestCase):
 
     def test_model_week_percentage_and_label(self):
         self.assertEqual(self.parsed.model_week_pct, 0.0)
+
+    def test_current_cli_capture_parses(self):
+        """The current 2.1.260 layout preserves all three window values."""
+        parsed = UsageScreenParser().parse(fixture("usage_nominal_2_1_260.txt"))
+        self.assertEqual(parsed.session_pct, 4.0)
+        self.assertEqual(parsed.week_pct, 1.0)
+        self.assertEqual(parsed.model_week_pct, 0.0)
         self.assertEqual(self.parsed.model_week_label, "Fable")
 
     def test_session_reset_is_time_only(self):
@@ -377,10 +385,11 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
 
     def test_trust_prompt_is_never_auto_answered(self):
         # Trusting a directory is the user's security decision, not ours.
-        source = open(
-            os.path.join(os.path.dirname(__file__), "..",
-                         "tmux_status_server", "cli_usage.py")
-        ).read()
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "tmux_status_server", "cli_usage.py"
+        )
+        with open(path) as f:
+            source = f.read()
         self.assertNotIn('send-keys", "-t", "0", "y"', source)
 
     def test_usage_view_detection(self):
@@ -389,10 +398,118 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         )
         self.assertFalse(HeadlessClaudeSession.shows_usage("Current session\n"))
 
+    def test_open_usage_view_without_limit_windows_is_detected(self):
+        """The live API-account screen is open but has no subscription limits."""
+        screen = fixture("usage_api_account_no_windows.txt")
+        self.assertTrue(HeadlessClaudeSession.shows_usage_view(screen))
+        self.assertFalse(HeadlessClaudeSession.shows_usage(screen))
+
+    def test_open_usage_view_without_windows_gets_specific_error(self):
+        """An opened dialog cannot collapse into usage_screen_timeout."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"):
+            with self.assertRaises(UsageError) as ctx:
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        self.assertEqual(ctx.exception.code, "usage_no_limit_windows")
+
+    def test_closed_usage_view_retains_screen_timeout(self):
+        """A dropped /usage command remains distinguishable from absent limits."""
+        session = HeadlessClaudeSession()
+        screen = "plan mode on (shift+tab to cycle)\n"
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"):
+            with self.assertRaises(UsageError) as ctx:
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        self.assertEqual(ctx.exception.code, "usage_screen_timeout")
+
+    def test_timeout_warning_reports_markers_without_full_screen(self):
+        """INFO-level daemons get diagnosis without dumping the whole pane."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"), \
+                self.assertLogs("tmux_status_server.cli_usage", level="WARNING") as logs:
+            with self.assertRaises(UsageError):
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        warning = "\n".join(logs.output)
+        self.assertIn("usage_dialog=yes", warning)
+        self.assertIn("session_heading=no", warning)
+        self.assertIn("week_heading=no", warning)
+        self.assertNotIn("Plugin skill-listing footprint", warning)
+
+    def test_retry_boundary_does_not_emit_terminal_warning(self):
+        """The halfway retry is not reported as a completed collection failure."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"), \
+                mock.patch("tmux_status_server.cli_usage.logger.warning") as warning:
+            with self.assertRaises(UsageError):
+                session._wait_for(
+                    session.shows_usage,
+                    1.0,
+                    "usage_screen_timeout",
+                    warn_on_timeout=False,
+                )
+        warning.assert_not_called()
+
     def test_fixed_capture_geometry(self):
         # Wrapping width is contractual: fixtures only match at 120x45.
         session = HeadlessClaudeSession()
         self.assertEqual((session.width, session.height), (120, 45))
+
+    def test_capture_scrubs_every_documented_auth_override(self):
+        """The pane shell cannot reintroduce an alternate account selector."""
+        claude = "/Applications/Claude Code/bin/claude cli"
+
+        def which(name, path=None):
+            return "/opt/homebrew/bin/tmux" if name == "tmux" else claude
+
+        with mock.patch("shutil.which", side_effect=which), \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(socket_name="test-sock"):
+                pass
+
+        new_session = next(
+            call for call in tmux.call_args_list if call.args[0] == "new-session"
+        )
+        command = new_session.args[-1]
+        expected_prefix = "/usr/bin/env " + " ".join(
+            f"-u {name}" for name in _AUTH_OVERRIDE_VARS
+        )
+        self.assertTrue(command.startswith(expected_prefix + " "))
+        self.assertIn("'/Applications/Claude Code/bin/claude cli'", command)
+        self.assertTrue(command.endswith(" --ax-screen-reader --permission-mode plan"))
+
+    def test_capture_can_explicitly_inherit_auth_environment(self):
+        """The opt-out omits env scrubbing but still quotes the binary path."""
+        with mock.patch("shutil.which", return_value="/path with spaces/claude"), \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(
+                socket_name="test-sock", inherit_auth_env=True
+            ):
+                pass
+
+        new_session = next(
+            call for call in tmux.call_args_list if call.args[0] == "new-session"
+        )
+        self.assertEqual(
+            new_session.args[-1],
+            "'/path with spaces/claude' --ax-screen-reader --permission-mode plan",
+        )
+
+    def test_capture_preserves_credential_store_and_network_routing(self):
+        """Isolation does not redirect the user's login store or endpoint."""
+        self.assertNotIn("CLAUDE_CONFIG_DIR", _AUTH_OVERRIDE_VARS)
+        self.assertNotIn("ANTHROPIC_BASE_URL", _AUTH_OVERRIDE_VARS)
 
 
 class TestBinaryResolutionUnderMinimalPath(unittest.TestCase):

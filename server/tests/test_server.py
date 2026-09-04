@@ -846,9 +846,14 @@ class TestMainFunction(unittest.TestCase):
             mock_args.api_key_file = None
             mock_args.interval = 300
             mock_args.log_level = "INFO"
+            mock_args.usage_socket = "test-usage"
+            mock_args.usage_cwd = "/tmp"
+            mock_args.boot_timeout = 42.0
+            mock_args.usage_inherit_auth_env = True
 
             with mock.patch("tmux_status_server.server.parse_args", return_value=mock_args) as mock_parse, \
                  mock.patch("tmux_status_server.server.warn_if_exposed") as mock_warn, \
+                 mock.patch("tmux_status_server.server.HeadlessClaudeSession") as MockSession, \
                  mock.patch("tmux_status_server.server.QuotaServer") as MockServer, \
                  mock.patch("logging.basicConfig"):
                 tmux_status_server.server.main()
@@ -860,6 +865,13 @@ class TestMainFunction(unittest.TestCase):
                 self.assertIsNone(kwargs["api_key_file"])
                 self.assertEqual(kwargs["interval"], 300)
                 self.assertIsNotNone(kwargs["collector"])
+                kwargs["collector"]._session_factory()
+                MockSession.assert_called_once_with(
+                    socket_name="test-usage",
+                    cwd="/tmp",
+                    boot_timeout=42.0,
+                    inherit_auth_env=True,
+                )
                 MockServer.return_value.run.assert_called_once()
 
     def test_main_sets_logging_format(self):
@@ -1257,6 +1269,7 @@ class TestErrorBridgeAllCodes(unittest.TestCase):
             "cli_boot_timeout",
             "cli_not_authenticated",
             "usage_screen_timeout",
+            "usage_no_limit_windows",
             "usage_parse_failed",
             "tmux_unavailable",
             "collector_crashed",

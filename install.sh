@@ -58,6 +58,7 @@ SERVER_MODE=false
 SERVER_NO_AUTH=false
 SERVER_API_KEY=""
 SERVER_PORT=""
+USAGE_INHERIT_AUTH_ENV=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +66,7 @@ while [ $# -gt 0 ]; do
         --no-auth)  SERVER_NO_AUTH=true; shift ;;
         --api-key)  SERVER_API_KEY="${2:-}"; shift 2 ;;
         --port)     SERVER_PORT="${2:-}"; shift 2 ;;
+        --usage-inherit-auth-env) USAGE_INHERIT_AUTH_ENV=true; shift ;;
         *)          printf '\033[1;31m[tmux-status]\033[0m Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
@@ -217,6 +219,22 @@ check_tmux_version() {
         error "tmux $required+ required (found $version)"
         return 1
     fi
+}
+
+absolutize_launchd_log_paths() {
+    python3 - "$1" <<'PY'
+import os
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    plist = plistlib.load(f)
+for key in ("StandardOutPath", "StandardErrorPath"):
+    plist[key] = os.path.expanduser(plist[key])
+with open(path, "wb") as f:
+    plistlib.dump(plist, f)
+PY
 }
 
 # Detect which tmux.conf to use
@@ -644,8 +662,16 @@ if $SERVER_MODE; then
     fi
 fi
 
+if $USAGE_INHERIT_AUTH_ENV; then
+    _server_args="$_server_args --usage-inherit-auth-env"
+fi
+
 # ── Install and start daemon (systemd/launchd) ───────────────
 OS_TYPE="$(uname -s)"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    LAUNCHD_LOG_DIR="$HOME/Library/Logs/tmux-status"
+    mkdir -p "$LAUNCHD_LOG_DIR"
+fi
 info "Setting up tmux-status-server daemon ($OS_TYPE)..."
 
 if [ "$OS_TYPE" = "Linux" ]; then
@@ -681,6 +707,7 @@ pl['ProgramArguments'] = args
 with open(path, 'wb') as f:
     plistlib.dump(pl, f)
 "
+    absolutize_launchd_log_paths "$LAUNCHD_PLIST"
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load "$LAUNCHD_PLIST" 2>/dev/null || true
     ok "launchd plist installed and loaded"
@@ -718,6 +745,7 @@ pl['ProgramArguments'] = ['$HOME/.local/bin/tmux-status-renderd']
 with open(path, 'wb') as f:
     plistlib.dump(pl, f)
 "
+    absolutize_launchd_log_paths "$RENDERD_PLIST"
     launchctl unload "$RENDERD_PLIST" 2>/dev/null || true
     launchctl load "$RENDERD_PLIST" 2>/dev/null || true
     ok "render daemon installed and loaded (launchd)"
@@ -758,6 +786,7 @@ pl['ProgramArguments'] = ['$HOME/.local/bin/tmux-status-prune-clients'] + pl['Pr
 with open(path, 'wb') as f:
     plistlib.dump(pl, f)
 "
+    absolutize_launchd_log_paths "$PRUNE_PLIST"
     launchctl unload "$PRUNE_PLIST" 2>/dev/null || true
     launchctl load "$PRUNE_PLIST" 2>/dev/null || true
     ok "prune agent installed and loaded (launchd, every 30m)"
