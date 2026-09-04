@@ -85,6 +85,113 @@ warn()  { printf '\033[1;33m[tmux-status]\033[0m %s\n' "$1"; }
 error() { printf '\033[1;31m[tmux-status]\033[0m %s\n' "$1" >&2; }
 ok()    { printf '\033[1;32m[tmux-status]\033[0m %s\n' "$1"; }
 
+# Setuptools caches copied sources under build/lib and does not prune modules
+# deleted from the source tree. Only remove artifacts from a validated package
+# root so a bad INSTALL_DIR can never broaden either destructive path.
+clean_build_artifacts() {
+    local server_dir="${1:-$INSTALL_DIR/server}"
+    local artifact
+
+    if [ ! -f "$server_dir/pyproject.toml" ] || [ ! -d "$server_dir/tmux_status_server" ]; then
+        error "Refusing to clean unrecognized server package root: $server_dir"
+        return 1
+    fi
+
+    rm -rf "$server_dir/build"
+    for artifact in "$server_dir"/*.egg-info; do
+        [ -e "$artifact" ] || continue
+        rm -rf "$artifact"
+    done
+}
+
+# Validate the artifact through the interpreter that will run it. This checks
+# the installed filesystem (including orphans omitted from the new RECORD) and
+# rejects distributions outside the package's dependency closure.
+verify_installed_package() {
+    local python_bin="$1"
+    local server_dir="${2:-$INSTALL_DIR/server}"
+
+    if [ ! -x "$python_bin" ]; then
+        error "Installed server Python is not executable: $python_bin"
+        return 1
+    fi
+    if [ ! -d "$server_dir/tmux_status_server" ]; then
+        error "Server source package not found: $server_dir/tmux_status_server"
+        return 1
+    fi
+
+    if ! "$python_bin" - "$server_dir" <<'PY'
+import importlib.metadata
+import pathlib
+import re
+import sys
+import sysconfig
+
+server_dir = pathlib.Path(sys.argv[1])
+source_root = server_dir / "tmux_status_server"
+installed_root = pathlib.Path(sysconfig.get_paths()["purelib"]) / "tmux_status_server"
+
+
+def python_files(root):
+    return {path.relative_to(root).as_posix() for path in root.rglob("*.py")}
+
+
+if not installed_root.is_dir():
+    raise SystemExit(f"installed package directory not found: {installed_root}")
+
+source_files = python_files(source_root)
+installed_files = python_files(installed_root)
+if source_files != installed_files:
+    missing = sorted(source_files - installed_files)
+    extra = sorted(installed_files - source_files)
+    if missing:
+        print("missing installed modules: " + ", ".join(missing), file=sys.stderr)
+    if extra:
+        print("unexpected installed modules: " + ", ".join(extra), file=sys.stderr)
+    raise SystemExit(1)
+
+
+def normalize(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+distributions = {}
+for distribution in importlib.metadata.distributions():
+    name = distribution.metadata.get("Name")
+    if name:
+        distributions[normalize(name)] = distribution
+
+root_name = "tmux-status-server"
+if root_name not in distributions:
+    raise SystemExit("installed distribution metadata not found: tmux-status-server")
+
+expected = {root_name}
+pending = [root_name]
+while pending:
+    distribution = distributions[pending.pop()]
+    for requirement in distribution.requires or ():
+        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+        if not match:
+            continue
+        dependency = normalize(match.group(1))
+        # Environment markers can make a declared dependency inapplicable.
+        if dependency in distributions and dependency not in expected:
+            expected.add(dependency)
+            pending.append(dependency)
+
+bootstrap = {"pip", "setuptools", "wheel"}
+unexpected = sorted(set(distributions) - expected - bootstrap)
+if unexpected:
+    print("unexpected installed distributions: " + ", ".join(unexpected), file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        error "Installed server package does not match the current source tree."
+        echo "  Remove the server environment and re-run install.sh."
+        return 1
+    fi
+}
+
 check_dep() {
     if ! command -v "$1" >/dev/null 2>&1; then
         error "$1 is required but not found."
@@ -431,14 +538,28 @@ if [ ! -d "$INSTALL_DIR/server/" ]; then
 fi
 info "Installing tmux-status-server package..."
 _server_installed=false
+_server_python=""
 
 # Strategy 1: pipx (cleanest — isolated venv, auto-links to ~/.local/bin/)
 if command -v pipx >/dev/null 2>&1; then
-    if pipx install --force "$INSTALL_DIR/server/" 2>&1; then
-        _server_installed=true
-        ok "Server package installed (via pipx)"
+    clean_build_artifacts "$INSTALL_DIR/server" || exit 1
+    _pipx_home=$(pipx environment --value PIPX_HOME 2>/dev/null || true)
+    if [ -z "$_pipx_home" ]; then
+        warn "Could not resolve PIPX_HOME, trying fallback..."
     else
-        warn "pipx install failed, trying fallback..."
+        _pipx_venv="$_pipx_home/venvs/tmux-status-server"
+        if [ -d "$_pipx_venv" ] && ! pipx uninstall tmux-status-server 2>&1; then
+            error "Could not remove the existing pipx environment: $_pipx_venv"
+            echo "  Resolve the pipx error above, then re-run install.sh."
+            exit 1
+        fi
+        if pipx install "$INSTALL_DIR/server/" 2>&1; then
+            _server_installed=true
+            _server_python="$_pipx_venv/bin/python"
+            ok "Server package installed (via pipx)"
+        else
+            warn "pipx install failed, trying fallback..."
+        fi
     fi
 fi
 
@@ -446,11 +567,13 @@ fi
 if ! $_server_installed && command -v uv >/dev/null 2>&1; then
     VENV_DIR="$HOME/.local/share/tmux-status/venv"
     info "Creating venv at $VENV_DIR (via uv)..."
+    clean_build_artifacts "$INSTALL_DIR/server" || exit 1
     if uv venv --clear "$VENV_DIR" 2>&1 && \
        uv pip install --python "$VENV_DIR/bin/python" "$INSTALL_DIR/server/" 2>&1; then
         ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server"
         ln -sf "$VENV_DIR/bin/tmux-status-renderd" "$BIN_DIR/tmux-status-renderd"
         _server_installed=true
+        _server_python="$VENV_DIR/bin/python"
         ok "Server package installed (uv + venv)"
     else
         warn "uv install failed, trying fallback..."
@@ -461,11 +584,13 @@ fi
 if ! $_server_installed; then
     VENV_DIR="$HOME/.local/share/tmux-status/venv"
     info "Creating venv at $VENV_DIR..."
-    python3 -m venv "$VENV_DIR" 2>&1 && \
+    clean_build_artifacts "$INSTALL_DIR/server" || exit 1
+    python3 -m venv --clear "$VENV_DIR" 2>&1 && \
     "$VENV_DIR/bin/pip" install "$INSTALL_DIR/server/" 2>&1 && \
     ln -sf "$VENV_DIR/bin/tmux-status-server" "$BIN_DIR/tmux-status-server" && \
     ln -sf "$VENV_DIR/bin/tmux-status-renderd" "$BIN_DIR/tmux-status-renderd" && \
     _server_installed=true && \
+    _server_python="$VENV_DIR/bin/python" && \
     ok "Server package installed (venv + symlink)"
 fi
 
@@ -480,6 +605,9 @@ if ! $_server_installed; then
     echo ""
     exit 1
 fi
+
+verify_installed_package "$_server_python" "$INSTALL_DIR/server" || exit 1
+ok "Installed server package matches source and dependency metadata"
 
 # ── Kill old quota-poll processes ─────────────────────────────
 if pgrep -f 'tmux-status-quota-poll' >/dev/null 2>&1; then

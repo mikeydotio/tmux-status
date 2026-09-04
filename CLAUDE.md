@@ -70,6 +70,14 @@ Two further contracts in `cli_usage.py`:
 - **Geometry is fixed at 120x45.** Wrapping width decides where lines break, and therefore whether the golden fixtures still match.
 - **Readiness is keyed on the input-mode footer (`shift+tab`), never the startup banner.** Measured: the banner paints ~3s before the input box accepts keystrokes, and keys sent in that window are silently dropped. The transient `effort:` hint is also unusable — it clears after ~10s.
 
+### Build hygiene invariant (do not break)
+
+Setuptools' `server/build/` cache can retain Python modules deleted from source.
+Every install strategy must clean `server/build/` and immediate `*.egg-info`
+before building, recreate its target environment, then verify the installed
+module set and dependency closure. `tests/unit/test_build_artifacts.sh` and
+`tests/unit/test_install_venv_hygiene.sh` gate this contract.
+
 ### Session Launcher (optional)
 
 - **`scripts/tmux-status-session`** (Bash/Python) — Data-driven tmux session creator. Reads `~/.config/tmux-status/windows.json` to create named windows with staggered command execution. Re-attaches if the session already exists.
