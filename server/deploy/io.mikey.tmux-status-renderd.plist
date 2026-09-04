@@ -13,5 +13,9 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>~/Library/Logs/tmux-status/io.mikey.tmux-status-renderd.log</string>
+    <key>StandardErrorPath</key>
+    <string>~/Library/Logs/tmux-status/io.mikey.tmux-status-renderd.log</string>
 </dict>
 </plist>
