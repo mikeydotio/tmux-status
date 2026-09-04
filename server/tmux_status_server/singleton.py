@@ -46,11 +46,11 @@ def acquire_singleton(lock_path):
     except OSError:
         # Locking unsupported (e.g. some network filesystems): degrade to
         # running rather than refusing to start. The thin readers tolerate a
-        # racing second writer because cache writes are atomic.
+        # racing second writer because cache writes are atomic. Still publish
+        # this process's pid below so tmux-status-poke can discover it.
         logger.warning("flock unavailable on %s; continuing without guard", lock_path)
-        return fd
 
-    # We hold the lock — record our pid for humans inspecting the file.
+    # Publish the pid after acquiring the lock or entering the degraded path.
     try:
         fd.seek(0)
         fd.truncate()

@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -46,6 +47,18 @@ class TestSingleton(unittest.TestCase):
 
     def test_writes_pid(self):
         fd = acquire_singleton(self.lock)
+        self.assertIsNotNone(fd)
+        fd.close()
+        with open(self.lock) as f:
+            self.assertEqual(f.read().strip(), str(os.getpid()))
+
+    def test_writes_pid_when_flock_is_unavailable(self):
+        """The degraded path must remain discoverable by tmux-status-poke."""
+        with mock.patch(
+            "tmux_status_server.singleton.fcntl.flock",
+            side_effect=OSError("locking unsupported"),
+        ):
+            fd = acquire_singleton(self.lock)
         self.assertIsNotNone(fd)
         fd.close()
         with open(self.lock) as f:
