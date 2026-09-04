@@ -38,6 +38,13 @@ class TestInitModule(unittest.TestCase):
         )
         self.assertTrue(os.path.isfile(init_path))
 
+    def test_package_description_matches_cli_collector(self):
+        """Package metadata describes the current CLI-backed architecture."""
+        import tmux_status_server
+
+        self.assertIn("CLI usage", tmux_status_server.__doc__)
+        self.assertNotIn("claude.ai", tmux_status_server.__doc__)
+
 
 class TestMainModule(unittest.TestCase):
     """Test __main__.py contents."""

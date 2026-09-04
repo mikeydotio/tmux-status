@@ -1,3 +1,3 @@
-"""tmux-status-server: Scrape claude.ai for quota data and serve via HTTP REST API."""
+"""Collect Claude CLI usage and serve quota data over HTTP."""
 
 __version__ = "0.1.0"

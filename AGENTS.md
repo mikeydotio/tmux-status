@@ -4,6 +4,14 @@
 
 This project uses **storyhook** for task tracking. All agents must follow the workflow below.
 
+## Mini-roadmap
+
+- [x] Move status rendering off tmux's redraw path into the render daemon.
+- [x] Replace claude.ai scraping with isolated Claude CLI usage collection.
+- [x] Make server builds and managed Python environments reproducibly clean.
+- [ ] Add the host SSH keepalive guard documented in `HANDOFF.md`.
+- [ ] Fix abandoned mosh/SSH transports at the source in the Moshtail repo.
+
 ## Workflow
 
 1. **Start of session**: Load project context
