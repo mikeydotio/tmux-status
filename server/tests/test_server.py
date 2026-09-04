@@ -1269,6 +1269,7 @@ class TestErrorBridgeAllCodes(unittest.TestCase):
             "cli_boot_timeout",
             "cli_not_authenticated",
             "usage_screen_timeout",
+            "usage_no_limit_windows",
             "usage_parse_failed",
             "tmux_unavailable",
             "collector_crashed",

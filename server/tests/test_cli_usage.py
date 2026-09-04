@@ -54,6 +54,13 @@ class TestParseNominal(unittest.TestCase):
 
     def test_model_week_percentage_and_label(self):
         self.assertEqual(self.parsed.model_week_pct, 0.0)
+
+    def test_current_cli_capture_parses(self):
+        """The current 2.1.260 layout preserves all three window values."""
+        parsed = UsageScreenParser().parse(fixture("usage_nominal_2_1_260.txt"))
+        self.assertEqual(parsed.session_pct, 4.0)
+        self.assertEqual(parsed.week_pct, 1.0)
+        self.assertEqual(parsed.model_week_pct, 0.0)
         self.assertEqual(self.parsed.model_week_label, "Fable")
 
     def test_session_reset_is_time_only(self):
@@ -390,6 +397,67 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
             HeadlessClaudeSession.shows_usage("Current week (all models)\n4% used\n")
         )
         self.assertFalse(HeadlessClaudeSession.shows_usage("Current session\n"))
+
+    def test_open_usage_view_without_limit_windows_is_detected(self):
+        """The live API-account screen is open but has no subscription limits."""
+        screen = fixture("usage_api_account_no_windows.txt")
+        self.assertTrue(HeadlessClaudeSession.shows_usage_view(screen))
+        self.assertFalse(HeadlessClaudeSession.shows_usage(screen))
+
+    def test_open_usage_view_without_windows_gets_specific_error(self):
+        """An opened dialog cannot collapse into usage_screen_timeout."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"):
+            with self.assertRaises(UsageError) as ctx:
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        self.assertEqual(ctx.exception.code, "usage_no_limit_windows")
+
+    def test_closed_usage_view_retains_screen_timeout(self):
+        """A dropped /usage command remains distinguishable from absent limits."""
+        session = HeadlessClaudeSession()
+        screen = "plan mode on (shift+tab to cycle)\n"
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"):
+            with self.assertRaises(UsageError) as ctx:
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        self.assertEqual(ctx.exception.code, "usage_screen_timeout")
+
+    def test_timeout_warning_reports_markers_without_full_screen(self):
+        """INFO-level daemons get diagnosis without dumping the whole pane."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"), \
+                self.assertLogs("tmux_status_server.cli_usage", level="WARNING") as logs:
+            with self.assertRaises(UsageError):
+                session._wait_for(session.shows_usage, 1.0, "usage_screen_timeout")
+        warning = "\n".join(logs.output)
+        self.assertIn("usage_dialog=yes", warning)
+        self.assertIn("session_heading=no", warning)
+        self.assertIn("week_heading=no", warning)
+        self.assertNotIn("Plugin skill-listing footprint", warning)
+
+    def test_retry_boundary_does_not_emit_terminal_warning(self):
+        """The halfway retry is not reported as a completed collection failure."""
+        session = HeadlessClaudeSession()
+        screen = fixture("usage_api_account_no_windows.txt")
+        with mock.patch.object(session, "_capture", return_value=screen), \
+                mock.patch("time.monotonic", side_effect=(0.0, 0.0, 2.0)), \
+                mock.patch("time.sleep"), \
+                mock.patch("tmux_status_server.cli_usage.logger.warning") as warning:
+            with self.assertRaises(UsageError):
+                session._wait_for(
+                    session.shows_usage,
+                    1.0,
+                    "usage_screen_timeout",
+                    warn_on_timeout=False,
+                )
+        warning.assert_not_called()
 
     def test_fixed_capture_geometry(self):
         # Wrapping width is contractual: fixtures only match at 120x45.

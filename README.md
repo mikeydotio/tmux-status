@@ -300,12 +300,18 @@ serves it to the status bar renderer. The installer sets this up automatically o
 claude auth   # or just run `claude` once and sign in
 ```
 
-That is the entire setup. Every ~300s the server boots `claude` headless inside its
-own private tmux socket, opens the `/usage` screen, reads the numbers off it, and
-tears the session down. Because it reuses the CLI's own login there is **no session
-key to mint, rotate, or have silently revoked** — the failure mode of the previous
-claude.ai scraper, which showed up as `X` in the status bar whenever a browser
-logout invalidated the key.
+Use a Claude Pro, Max, Team, or Enterprise subscription login. Every ~300s the
+server boots `claude` headless inside its own private tmux socket, opens `/usage`,
+reads the numbers, and tears the session down. It uses the CLI's stored login, so
+there is **no session key to mint, rotate, or have silently revoked**.
+
+The collector removes ambient API credentials and provider selectors from the
+capture command. This prevents shell startup files from silently replacing the
+subscription login with an account that has no five-hour or weekly windows. It
+preserves `CLAUDE_CONFIG_DIR`, so a deliberately selected Claude profile remains
+selected. If you intentionally need the capture to inherit ambient authentication,
+re-run the installer with `--usage-inherit-auth-env`; accounts without subscription
+windows will correctly render `X` and report `usage_no_limit_windows`.
 
 The capture is isolated on purpose: it never touches your default tmux server, so
 it cannot appear in your window list, consume your tmux server's file descriptors,
@@ -362,6 +368,7 @@ This binds to `0.0.0.0`, auto-generates an API key, and prints the client config
 | `--no-auth` | Skip API key (trusted LAN) |
 | `--api-key <key>` | Use a specific key instead of auto-generating |
 | `--port <port>` | Use a custom port (default: 7850) |
+| `--usage-inherit-auth-env` | Let ambient credentials override the subscription login |
 
 Re-running `--server` is idempotent — it keeps the existing API key unless `--api-key` provides a new one.
 
@@ -374,6 +381,30 @@ cd ~/projects/tmux-status && git pull
 Scripts update automatically via symlinks. Reload tmux config to pick up any overlay changes.
 
 ## Troubleshooting
+
+### Claude quota shows `X`
+
+Inspect `/quota` for the collector error and the daemon log for its marker summary:
+
+```bash
+curl -s http://127.0.0.1:7850/quota
+tail -n 100 ~/Library/Logs/tmux-status/io.mikey.tmux-status-server.log  # macOS
+journalctl --user -u tmux-status-server -n 100                          # Linux
+```
+
+On macOS, render-daemon and prune-agent logs use the same directory with file
+names matching their launchd labels.
+
+| Error | Meaning |
+|---|---|
+| `cli_not_found` / `tmux_unavailable` | Required executable is unavailable |
+| `cli_boot_timeout` | Claude never became ready |
+| `cli_not_authenticated` | The selected profile needs `/login` |
+| `cli_workspace_untrusted` | The capture directory needs explicit trust or `--usage-cwd` |
+| `usage_screen_timeout` | `/usage` never opened |
+| `usage_no_limit_windows` | `/usage` opened, but the selected account exposes no subscription windows |
+| `usage_parse_failed` | Limit headings appeared but their values could not be parsed |
+| `collector_crashed` | An unexpected collector failure occurred; inspect the log |
 
 ### Status lines show `<'…tmux-agent-status "…" model' didn't start>`
 
