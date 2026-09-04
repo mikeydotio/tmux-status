@@ -29,7 +29,10 @@ Each daemon tick performs these bounded stages:
    pane PIDs that no longer exist.
 
 `SIGUSR1` wakes the daemon for an immediate tick after infrequent structural
-tmux events. The regular interval and singleton guard prevent overlapping work.
+tmux events. The poke helper signals only the identity-verified PID published in
+`renderd.lock`; it never broadcasts by process name, so a daemon cannot be killed
+before its signal handler is armed. The regular interval and singleton guard
+prevent overlapping work.
 
 ## Provider Adapters
 

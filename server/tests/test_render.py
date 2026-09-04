@@ -1222,8 +1222,8 @@ class TestSignalWake(unittest.TestCase):
 
     def test_once_mode_ignores_sigusr1(self):
         """A stray poke (SIGUSR1) must not kill the one-shot --once warm-up —
-        ``tmux-status-poke``'s pkill fallback and the tmux re-source hooks can
-        land one mid-pass, and the default disposition would terminate it."""
+        direct callers do not pass through the protected console entry module,
+        and the default disposition would terminate them."""
         import argparse
         args = argparse.Namespace(once=True, interval=5, log_level="INFO")
         seen = {}
