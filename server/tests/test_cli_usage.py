@@ -21,6 +21,7 @@ from tmux_status_server.cli_usage import (  # noqa: E402
     ResetSpec,
     UsageError,
     UsageScreenParser,
+    _AUTH_OVERRIDE_VARS,
     _is_safe_cwd,
     default_usage_cwd,
     search_path,
@@ -393,6 +394,53 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         # Wrapping width is contractual: fixtures only match at 120x45.
         session = HeadlessClaudeSession()
         self.assertEqual((session.width, session.height), (120, 45))
+
+    def test_capture_scrubs_every_documented_auth_override(self):
+        """The pane shell cannot reintroduce an alternate account selector."""
+        claude = "/Applications/Claude Code/bin/claude cli"
+
+        def which(name, path=None):
+            return "/opt/homebrew/bin/tmux" if name == "tmux" else claude
+
+        with mock.patch("shutil.which", side_effect=which), \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(socket_name="test-sock"):
+                pass
+
+        new_session = next(
+            call for call in tmux.call_args_list if call.args[0] == "new-session"
+        )
+        command = new_session.args[-1]
+        expected_prefix = "/usr/bin/env " + " ".join(
+            f"-u {name}" for name in _AUTH_OVERRIDE_VARS
+        )
+        self.assertTrue(command.startswith(expected_prefix + " "))
+        self.assertIn("'/Applications/Claude Code/bin/claude cli'", command)
+        self.assertTrue(command.endswith(" --ax-screen-reader --permission-mode plan"))
+
+    def test_capture_can_explicitly_inherit_auth_environment(self):
+        """The opt-out omits env scrubbing but still quotes the binary path."""
+        with mock.patch("shutil.which", return_value="/path with spaces/claude"), \
+                mock.patch.object(HeadlessClaudeSession, "_tmux") as tmux:
+            tmux.return_value.returncode = 0
+            with HeadlessClaudeSession(
+                socket_name="test-sock", inherit_auth_env=True
+            ):
+                pass
+
+        new_session = next(
+            call for call in tmux.call_args_list if call.args[0] == "new-session"
+        )
+        self.assertEqual(
+            new_session.args[-1],
+            "'/path with spaces/claude' --ax-screen-reader --permission-mode plan",
+        )
+
+    def test_capture_preserves_credential_store_and_network_routing(self):
+        """Isolation does not redirect the user's login store or endpoint."""
+        self.assertNotIn("CLAUDE_CONFIG_DIR", _AUTH_OVERRIDE_VARS)
+        self.assertNotIn("ANTHROPIC_BASE_URL", _AUTH_OVERRIDE_VARS)
 
 
 class TestBinaryResolutionUnderMinimalPath(unittest.TestCase):

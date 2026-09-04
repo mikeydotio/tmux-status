@@ -46,6 +46,16 @@ class TestParseArgs(unittest.TestCase):
         """--boot-timeout has a default generous enough for CLI startup."""
         self.assertGreaterEqual(parse_args([]).boot_timeout, 30.0)
 
+    def test_usage_auth_environment_is_isolated_by_default(self):
+        """Subscription collection ignores ambient auth unless requested."""
+        self.assertFalse(parse_args([]).usage_inherit_auth_env)
+
+    def test_usage_auth_environment_can_be_inherited(self):
+        """The explicit opt-out is accepted."""
+        self.assertTrue(
+            parse_args(["--usage-inherit-auth-env"]).usage_inherit_auth_env
+        )
+
 
     def test_custom_host(self):
         """--host overrides the default."""

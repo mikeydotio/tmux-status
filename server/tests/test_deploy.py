@@ -245,6 +245,18 @@ class TestLaunchdLogging(unittest.TestCase):
         )
         self.assertEqual(source.count("absolutize_launchd_log_paths \"$"), 3)
 
+
+class TestInstallerUsageAuthentication(unittest.TestCase):
+    """The installer persists the server's auth-environment opt-out."""
+
+    def test_installer_accepts_and_forwards_inherit_auth_flag(self):
+        """Both launchd and systemd receive the selected server argument."""
+        with open(os.path.join(REPO_DIR, "install.sh")) as f:
+            source = f.read()
+
+        self.assertIn("--usage-inherit-auth-env)", source)
+        self.assertIn('_server_args="$_server_args --usage-inherit-auth-env"', source)
+
 class TestDockerfileExists(unittest.TestCase):
     """Test that the Dockerfile exists."""
 

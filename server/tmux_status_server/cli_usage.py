@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -63,6 +64,23 @@ DEFAULT_HEIGHT = 45
 DEFAULT_BOOT_TIMEOUT = 45.0
 DEFAULT_SCREEN_TIMEOUT = 30.0
 _POLL_INTERVAL = 0.5
+
+# Claude Code authentication precedence puts provider selectors and explicit
+# credentials ahead of the subscription login. The collector measures the
+# subscription's rate-limit windows, so a shell startup file must not be able
+# to silently select a different billing identity after tmux starts the pane.
+# CLAUDE_CONFIG_DIR is intentionally preserved: it selects the user's actual
+# credential store rather than overriding the credential within that store.
+_AUTH_OVERRIDE_VARS = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -428,13 +446,15 @@ class HeadlessClaudeSession:
     def __init__(self, socket_name=DEFAULT_SOCKET, cwd=None,
                  width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
                  boot_timeout=DEFAULT_BOOT_TIMEOUT,
-                 screen_timeout=DEFAULT_SCREEN_TIMEOUT):
+                 screen_timeout=DEFAULT_SCREEN_TIMEOUT,
+                 inherit_auth_env=False):
         self.socket_name = socket_name
         self.cwd = cwd or default_usage_cwd()
         self.width = width
         self.height = height
         self.boot_timeout = boot_timeout
         self.screen_timeout = screen_timeout
+        self.inherit_auth_env = inherit_auth_env
         self._started = False
         self._pane_pid = None
         self.tmux_bin = "tmux"
@@ -455,7 +475,15 @@ class HeadlessClaudeSession:
         # Any survivor from a previous crashed run would serve a stale screen.
         self._tmux("kill-server", check=False)
 
-        command = f"{self.claude_bin} --ax-screen-reader --permission-mode plan"
+        command_parts = []
+        if not self.inherit_auth_env:
+            command_parts.append("/usr/bin/env")
+            for name in _AUTH_OVERRIDE_VARS:
+                command_parts.extend(("-u", name))
+        command_parts.extend(
+            (self.claude_bin, "--ax-screen-reader", "--permission-mode", "plan")
+        )
+        command = " ".join(shlex.quote(part) for part in command_parts)
         args = ["new-session", "-d", "-x", str(self.width), "-y", str(self.height)]
         if self.cwd:
             args += ["-c", str(self.cwd)]

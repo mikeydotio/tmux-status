@@ -58,6 +58,7 @@ SERVER_MODE=false
 SERVER_NO_AUTH=false
 SERVER_API_KEY=""
 SERVER_PORT=""
+USAGE_INHERIT_AUTH_ENV=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +66,7 @@ while [ $# -gt 0 ]; do
         --no-auth)  SERVER_NO_AUTH=true; shift ;;
         --api-key)  SERVER_API_KEY="${2:-}"; shift 2 ;;
         --port)     SERVER_PORT="${2:-}"; shift 2 ;;
+        --usage-inherit-auth-env) USAGE_INHERIT_AUTH_ENV=true; shift ;;
         *)          printf '\033[1;31m[tmux-status]\033[0m Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
@@ -530,6 +532,10 @@ if $SERVER_MODE; then
         fi
         _server_args="$_server_args --api-key-file $API_KEY_FILE"
     fi
+fi
+
+if $USAGE_INHERIT_AUTH_ENV; then
+    _server_args="$_server_args --usage-inherit-auth-env"
 fi
 
 # ── Install and start daemon (systemd/launchd) ───────────────

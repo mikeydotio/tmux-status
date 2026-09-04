@@ -27,7 +27,8 @@ def parse_args(argv=None):
 
     Returns:
         argparse.Namespace with host, port, api_key_file, interval,
-        usage_socket, usage_cwd, boot_timeout, and log_level attributes.
+        usage_socket, usage_cwd, usage_inherit_auth_env, boot_timeout, and
+        log_level attributes.
     """
     parser = argparse.ArgumentParser(
         description="Collect Claude usage data from the CLI and serve via HTTP REST API.",
@@ -56,6 +57,14 @@ def parse_args(argv=None):
         "--usage-cwd",
         default=None,
         help="Working directory for the headless CLI session (default: process cwd)",
+    )
+    parser.add_argument(
+        "--usage-inherit-auth-env",
+        action="store_true",
+        help=(
+            "Allow ambient credentials and provider selectors to override the "
+            "subscription login used for quota collection"
+        ),
     )
     parser.add_argument(
         "--boot-timeout",
