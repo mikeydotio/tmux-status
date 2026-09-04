@@ -334,7 +334,8 @@ pane or a freshly `/clear`'d session, structural tmux events (new window/pane/se
 and the Claude statusLine context hook nudge the daemon (`tmux-status-poke` → SIGUSR1)
 for an immediate one-off tick, so the status fills in sub-second. These pokes fire only
 on infrequent events — never on the per-render path — so the fork-free guarantee holds
-and the steady 5s interval is unchanged.
+and the steady 5s interval is unchanged. A poke signals only the identity-verified PID
+in `renderd.lock`; a missing or stale lock is a safe no-op while a daemon starts.
 
 #### Client Mode (multiple machines)
 
