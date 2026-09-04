@@ -2,6 +2,7 @@
 
 import ast
 import os
+import re
 import sys
 import unittest
 
@@ -134,9 +135,11 @@ class TestPyprojectToml(unittest.TestCase):
         """pyproject.toml declares bottle>=0.12.25 dependency."""
         self.assertIn('"bottle>=0.12.25"', self.content)
 
-    def test_no_curl_cffi_dependency(self):
-        """curl_cffi is gone: usage now comes from the CLI, not HTTP scraping."""
-        self.assertNotIn("curl_cffi", self.content)
+    def test_dependency_allowlist(self):
+        """Only the reviewed runtime dependency is declared."""
+        match = re.search(r"dependencies\s*=\s*(\[[^]]*\])", self.content, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertEqual(ast.literal_eval(match.group(1)), ["bottle>=0.12.25"])
 
     def test_console_script_entry_point(self):
         """pyproject.toml declares tmux-status-server console script."""

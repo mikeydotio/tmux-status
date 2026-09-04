@@ -18,6 +18,10 @@ test:
 	@bash tests/unit/test_status_conf_contract.sh
 	@echo "── install.sh source-dir resolution ──"
 	@bash tests/unit/test_install_dir.sh
+	@echo "── setuptools staging purity ──"
+	@bash tests/unit/test_build_artifacts.sh
+	@echo "── installed package hygiene ──"
+	@bash tests/unit/test_install_venv_hygiene.sh
 	@echo "── install/uninstall non-interactive safety ──"
 	@bash tests/unit/test_install_noninteractive.sh
 	@echo "── model unit tests ──"
