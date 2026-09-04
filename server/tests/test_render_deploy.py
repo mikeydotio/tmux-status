@@ -79,7 +79,7 @@ class TestRenderdEntryPoint(unittest.TestCase):
         pyproject = os.path.join(DEPLOY_DIR, "..", "pyproject.toml")
         with open(pyproject) as f:
             content = f.read()
-        self.assertIn('tmux-status-renderd = "tmux_status_server.render:main"', content)
+        self.assertIn('tmux-status-renderd = "tmux_status_server.renderd_entry:main"', content)
 
 
 if __name__ == "__main__":

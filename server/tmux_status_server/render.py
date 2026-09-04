@@ -1575,12 +1575,14 @@ def main():
     home = os.path.expanduser("~")
 
     if args.once:
-        # A one-shot warm-up must survive a stray SIGUSR1: tmux-status-poke's
-        # pkill fallback (``pkill -USR1 -f tmux-status-renderd``) and the tmux
-        # re-source hooks can land a poke on this process mid-pass, and the
-        # default SIGUSR1 disposition is to terminate — which would silently
-        # abort the install cache warm-up. Ignore it (the daemon path installs
-        # the real wake handler in run() instead).
+        # The primary defense against a stray SIGUSR1 hitting a one-shot
+        # warm-up is renderd_entry.py, which ignores SIGUSR1 before this
+        # module is even imported (TS-52). This re-arm is defense-in-depth
+        # for a caller that invokes render.main() directly (e.g. tests) —
+        # tmux re-source hooks can still land a poke on this process mid-pass,
+        # and the default SIGUSR1 disposition is to terminate, which would
+        # silently abort the install cache warm-up. The daemon path installs
+        # the real wake handler in run() instead.
         signal.signal(signal.SIGUSR1, signal.SIG_IGN)
         render_once(home=home)
         return
