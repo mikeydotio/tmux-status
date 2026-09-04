@@ -3,6 +3,46 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v3.0.0] - 2026-09-04
+
+### Breaking
+- Quota is now measured by driving the authenticated `claude` CLI headlessly;
+  the claude.ai session-key scraper (`claude-usage-key.json`, `curl_cffi`) is
+  gone (395b6c2). **Upgraders must have a logged-in `claude` CLI** — the key
+  was silently revoked server-side on any browser logout, surfacing as
+  `403 account_session_invalid`. No credential is copied into tmux-status.
+
+### Added
+- Usage collector that boots the Claude CLI in a dedicated headless tmux
+  socket, sends `/usage`, and parses the limit windows offline (7405495)
+
+### Fixed
+- Identify missing quota windows instead of failing opaquely (8220f44)
+- Isolate quota-capture authentication from alternate-provider env overrides
+  (bff4391)
+- Start the capture in a trusted, non-world-writable cwd (6933e21)
+- Resolve `tmux`/`claude` under launchd's minimal PATH (837826d)
+- Publish the renderd PID without holding flock (7221dd8)
+- Protect every server entry point from SIGUSR1; remove the unsafe renderd
+  signal broadcast (ff94b32, cf3292e, 9682258)
+- Persist launch-agent diagnostics (95c81ba)
+- Rebuild and uninstall the server package from clean/managed environments
+  (7bd7987, 584ddde)
+- Correct the server package description (4e72b7b)
+- Never block a non-interactive install on the key prompt (5cdbfd2)
+
+### Documentation
+- Document CLI usage collection; retire the session key in install (20d7af8)
+- Link CLAUDE.md from AGENTS.md; ignore the dispatch sentinel (78aff33)
+
+### Testing
+- Close the collector source fixture (1c81c6c)
+
+### Maintenance
+- Ignore `.codex/` per-story worktrees (94b8f24)
+
+_[manual]_
+
 ## [Unreleased]
 
 ## [v2.7.0] - 2026-08-23
