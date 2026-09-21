@@ -39,7 +39,11 @@ def load_function(func_name):
     if func_name == '_maybe_fetch_quota':
         assert 'urllib.request.Request' in source, \
             f"{func_name} missing urllib.request.Request"
-        assert 'os.replace' in source, \
-            f"{func_name} missing os.replace"
+        # Atomicity now lives in the writer it delegates to; assert the
+        # delegation *and* the rename, so the guard still fails if either goes.
+        assert '_atomic_write_bytes' in source, \
+            f"{func_name} no longer writes via _atomic_write_bytes"
+        assert 'os.replace' in inspect.getsource(_render._atomic_write_bytes), \
+            "_atomic_write_bytes missing os.replace"
 
     return getattr(_render, func_name)

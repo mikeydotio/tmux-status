@@ -807,7 +807,9 @@ class TestComputeQuotaVars(unittest.TestCase):
                "five_hour": {}, "seven_day": {}}))
         q = render.compute_quota_vars(self.settings, self.tmp)
         self.assertEqual(q["five_hour_pct"], "X")
-        self.assertEqual(q["five_hour_remain"], "X")
+        # The window label survives so the line still says *which* window is
+        # unknown; the reader pairs it with X and the age.
+        self.assertEqual(q["five_hour_remain"], "5h")
 
     def test_missing_bridge_is_none(self):
         q = render.compute_quota_vars(self.settings, self.tmp)
@@ -815,13 +817,25 @@ class TestComputeQuotaVars(unittest.TestCase):
         self.assertEqual(q["five_hour_pct"], 0)
 
     def test_max_stale_override(self):
+        """Past QUOTA_MAX_STALE the reading is stale but still shown, with its age."""
         _write(self.bridge, json.dumps({"status": "ok",
+               "timestamp": int(time.time()) - 30,
                "five_hour": {"utilization": 10, "resets_at": ""},
                "seven_day": {"utilization": 10, "resets_at": ""}}))
-        os.utime(self.bridge, (1000, 1000))  # very old
         self.settings["quota_max_stale"] = 1
         q = render.compute_quota_vars(self.settings, self.tmp)
         self.assertEqual(q["quota_status"], "stale")
+        self.assertEqual(q["five_hour_pct"], 10)
+        self.assertGreaterEqual(q["quota_age"], 30)
+
+    def test_beyond_good_max_drops_the_numbers(self):
+        """Once too old to stand behind, report blindness rather than a figure."""
+        _write(self.bridge, json.dumps({"status": "ok",
+               "timestamp": int(time.time()) - 200000,
+               "five_hour": {"utilization": 10, "resets_at": ""},
+               "seven_day": {"utilization": 10, "resets_at": ""}}))
+        q = render.compute_quota_vars(self.settings, self.tmp)
+        self.assertEqual(q["quota_status"], "error")
         self.assertEqual(q["five_hour_pct"], "X")
 
 

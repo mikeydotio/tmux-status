@@ -22,7 +22,7 @@ class TestExtractionHarness(unittest.TestCase):
         source = extract_function('_maybe_fetch_quota')
         self.assertIn('def _maybe_fetch_quota(', source)
         self.assertIn('urllib.request.Request', source)
-        self.assertIn('os.replace', source)
+        self.assertIn('_atomic_write_bytes', source)
 
     def test_extract_function_is_valid_python(self):
         """Extracted function compiles as valid Python."""
