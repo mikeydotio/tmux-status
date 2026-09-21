@@ -66,11 +66,23 @@ DEFAULT_SCREEN_TIMEOUT = 30.0
 _POLL_INTERVAL = 0.5
 
 # Claude Code authentication precedence puts provider selectors and explicit
-# credentials ahead of the subscription login. The collector measures the
-# subscription's rate-limit windows, so a shell startup file must not be able
-# to silently select a different billing identity after tmux starts the pane.
-# CLAUDE_CONFIG_DIR is intentionally preserved: it selects the user's actual
-# credential store rather than overriding the credential within that store.
+# third-party credentials ahead of the stored login. The collector measures
+# rate-limit windows, so a shell startup file must not be able to silently
+# redirect the pane at a different *provider* after tmux starts it.
+#
+# What is deliberately NOT scrubbed is as important as what is. The collector
+# exists to observe the user's own sessions, so it must run as those sessions
+# run — piggybacking the auth already present rather than authenticating
+# itself. CLAUDE_CONFIG_DIR, ANTHROPIC_BASE_URL and CLAUDE_CODE_OAUTH_TOKEN all
+# select or carry the user's own login rather than redirecting to another
+# provider, so all three are preserved.
+#
+# CLAUDE_CODE_OAUTH_TOKEN was scrubbed until TS-57. It is Claude Code's own
+# first-party token (``claude setup-token``), and on a machine where it is the
+# credential real sessions use, removing it left the pane with nothing: every
+# poll reported cli_not_authenticated while the user's own CLI was plainly
+# logged in. Measured 2026-09-20 — scrubbed: cli_not_authenticated; inherited:
+# the Usage dialog opens and reports on whatever identity the user actually has.
 _AUTH_OVERRIDE_VARS = (
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
@@ -79,7 +91,6 @@ _AUTH_OVERRIDE_VARS = (
     "CLAUDE_CODE_USE_ANTHROPIC_AWS",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
 )
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
