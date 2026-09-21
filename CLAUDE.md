@@ -72,6 +72,36 @@ Two further contracts in `cli_usage.py`:
 - **Geometry is fixed at 120x45.** Wrapping width decides where lines break, and therefore whether the golden fixtures still match.
 - **Readiness is keyed on the input-mode footer (`shift+tab`), never the startup banner.** Measured: the banner paints ~3s before the input box accepts keystrokes, and keys sent in that window are silently dropped. The transient `effort:` hint is also unusable — it clears after ~10s.
 
+### Quota degradation contract (do not break)
+
+A quota outage must never render as a bare `X`. Two outages (2026-09-08
+`cli_boot_timeout`, 2026-09-16 `cli_not_authenticated`) each showed an identical
+`X` — one for 3h17m, one for four days — because every layer replaced the last
+good reading with the error. Three rules now prevent that; see
+`docs/spec/quota-resilience.md` and story TS-56.
+
+1. **Last-known-good is never overwritten by a failure.** `server.py`'s
+   `_do_collect` assigns `_cached_data` only on success; `render.py`'s
+   `_maybe_fetch_quota` writes the disk cache only for `status` `ok`/`stale` and
+   diverts anything else to `<cache>.error`. A six-minute-old correct reading
+   must survive the first failure of an outage.
+2. **Status is derived from the reading's age, in three steps.** `ok` within
+   `QUOTA_MAX_STALE` (300s), `stale` within `QUOTA_GOOD_MAX` (86400s) — real
+   numbers, amber, marked `⋯` — then `error`, which drops the numbers and
+   renders `X <age>`. A failed collection over a 30-second-old number does not
+   make that number wrong, so freshness never keys off the last attempt.
+3. **Sustained failure is loud and slow, not silent and fast.** Consecutive
+   failures double the poll interval (capped `QUOTA_BACKOFF_MAX`, 1h) and the
+   third logs once at ERROR. The 2026-09-16 outage ran 2385 full-rate CLI boots
+   at WARNING and nobody saw it.
+
+Additionally, an unrecognised CLI screen is `cli_unknown_screen`, distinct from
+a dead CLI (`cli_boot_timeout`), and every screen-derived failure writes the
+captured screen — token-shaped runs redacted — to
+`~/.cache/tmux-status/usage-failure.txt`. The 2026-09-08 outage was
+undiagnosable after the fact because 35 identical failures logged six false
+booleans and discarded the screen.
+
 ### Build hygiene invariant (do not break)
 
 Setuptools' `server/build/` cache can retain Python modules deleted from source.
@@ -91,7 +121,9 @@ module set and dependency closure. `tests/unit/test_build_artifacts.sh` and
 | `~/.config/tmux-status/settings.conf` | User settings (clock, banner, quota source) |
 | `~/.config/tmux-status/windows.json` | Session launcher config |
 | `~/.cache/tmux-status/claude-ctx-*.json` | Context/effort bridge files (`used_pct`, `model`, live `effort`/`thinking` — written by hook) |
-| `~/.cache/tmux-status/claude-quota.json` | Quota cache (written by renderer from server response) |
+| `~/.cache/tmux-status/claude-quota.json` | Quota cache — last *good* reading only (written by renderer) |
+| `~/.cache/tmux-status/claude-quota.json.error` | Most recent quota failure bridge; never overwrites the cache |
+| `~/.cache/tmux-status/usage-failure.txt` | Screen the last collection failed on, redacted (first stop when quota shows X) |
 | `~/.cache/tmux-status/render/pane-<pid>.env` | Per-pane render cache (written by the daemon, sourced by the thin readers) |
 | `~/.cache/tmux-status/render/renderd.lock` | Render daemon `flock` singleton guard; first line is the daemon pid (read by `tmux-status-poke`) |
 
