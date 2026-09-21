@@ -19,7 +19,7 @@ CACHE="${HOME}/.cache/tmux-status/render/pane-${PANE_PID}.env"
 # the rendered line without hiding other available metrics.
 AGENT_PROVIDER=""; AGENT_MODEL=""; AGENT_SHORT_MODEL=""; AGENT_EFFORT=""
 AGENT_HAS_THINKING=""; AGENT_CONTEXT_PCT=""
-AGENT_QUOTA_STATUS="none"; AGENT_QUOTA_WARN=0
+AGENT_QUOTA_STATUS="none"; AGENT_QUOTA_WARN=0; AGENT_QUOTA_AGE=""
 AGENT_QUOTA_1_DURATION=""; AGENT_QUOTA_1_RESET=""; AGENT_QUOTA_1_PCT=""
 AGENT_QUOTA_2_DURATION=""; AGENT_QUOTA_2_RESET=""; AGENT_QUOTA_2_PCT=""
 RENDER_TS=0
@@ -70,8 +70,12 @@ C_CTX="colour150"
 C_QUOTA_1="colour223"
 C_QUOTA_2="colour186"
 case "$AGENT_QUOTA_STATUS" in
-    session_key_expired|blocked|error|rate_limited|key_expired|stale)
+    session_key_expired|blocked|error|rate_limited|key_expired)
         C_QUOTA_1="colour196"; C_QUOTA_2="colour196" ;;
+    # Stale means the figures are real but no longer current — amber, not the
+    # red reserved for "we have no idea". The age is appended by append_quota.
+    stale)
+        C_QUOTA_1="colour179"; C_QUOTA_2="colour179" ;;
     *)
         if [ "${AGENT_QUOTA_WARN:-0}" = "1" ]; then
             C_QUOTA_1="colour196"; C_QUOTA_2="colour196"
@@ -108,6 +112,15 @@ append_quota() {
     [ -n "$duration" ] && [ -n "$reset" ] && [ -n "$pct" ] || return
     local label="$reset" display bar
     if [ "$pct" = "X" ]; then display="X"; else display="${pct}%"; fi
+    # An X that has stood for four days must not look like one five minutes
+    # old. Whenever the numbers are not current, say how far out of date they
+    # are rather than showing a bare marker (TS-56).
+    if [ -n "$AGENT_QUOTA_AGE" ]; then
+        case "$AGENT_QUOTA_STATUS" in
+            stale) display="${display}#[fg=colour8]⋯" ;;
+            *) [ "$pct" = "X" ] && display="${display} ${AGENT_QUOTA_AGE}" ;;
+        esac
+    fi
     bar=$(bar_char "$pct")
     append_separator
     AGENT_LINE="${AGENT_LINE} #[fg=${color}]${label}: ${bar} #[fg=${color}]${display}"

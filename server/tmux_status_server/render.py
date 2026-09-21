@@ -902,6 +902,7 @@ def load_settings(home):
         "quota_api_key": "",
         "quota_cache_ttl": 30,
         "quota_max_stale": 300,
+        "quota_good_max": 86400,
         "codex_home": os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"),
     }
     try:
@@ -931,6 +932,11 @@ def load_settings(home):
                         s["quota_max_stale"] = int(v)
                     except ValueError:
                         pass
+                elif k == "QUOTA_GOOD_MAX":
+                    try:
+                        s["quota_good_max"] = int(v)
+                    except ValueError:
+                        pass
                 elif k == "CODEX_HOME" and v:
                     s["codex_home"] = _expand_home_path(v, home)
     except Exception:
@@ -939,8 +945,45 @@ def load_settings(home):
 
 
 # ── Quota ──────────────────────────────────────────────────────────────────
+def quota_error_path(cache_path):
+    """Sibling of the quota cache holding the most recent failure bridge."""
+    return f"{cache_path}.error"
+
+
+def _atomic_write_bytes(path, data):
+    """Write bytes via temp-file + rename, creating the directory if needed.
+
+    Distinct from the text-mode ``_atomic_write`` used by the Codex sidecar:
+    this one takes the raw HTTP body and owns directory creation.
+    """
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def _bridge_has_numbers(bridge):
+    """True when a bridge carries a real reading rather than placeholders."""
+    if bridge.get("status") not in ("ok", "stale"):
+        return False
+    for window in ("five_hour", "seven_day"):
+        util = (bridge.get(window) or {}).get("utilization")
+        if util is not None and util != "X":
+            return True
+    return False
+
+
 def _maybe_fetch_quota(source_url, api_key, cache_ttl, cache_path):
-    """Fetch quota from the server, write to the disk cache. Silent on failure."""
+    """Fetch quota from the server, write to the disk cache. Silent on failure.
+
+    An error response is written *beside* the cache, never over it. Overwriting
+    good numbers with an error bridge is what destroyed a six-minute-old
+    reading on the first failure of two separate outages (TS-56); keeping it
+    lets the renderer show real numbers with an age instead of a bare ``X``.
+    """
     if not source_url:
         return
     if cache_ttl > 0:
@@ -955,14 +998,13 @@ def _maybe_fetch_quota(source_url, api_key, cache_ttl, cache_path):
             req.add_header("X-API-Key", api_key)
         resp = urllib.request.urlopen(req, timeout=3)
         data = resp.read()
-        json.loads(data)  # validate JSON
-        cache_dir = os.path.dirname(cache_path)
-        if cache_dir:
-            os.makedirs(cache_dir, exist_ok=True)
-        tmp = f"{cache_path}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, cache_path)
+        bridge = json.loads(data)  # validate JSON
+        # Status is the server's verdict on its own payload; whether the
+        # numbers are renderable is decided later, at render time.
+        if bridge.get("status") in ("ok", "stale"):
+            _atomic_write_bytes(cache_path, data)
+        else:
+            _atomic_write_bytes(quota_error_path(cache_path), data)
     except Exception:
         pass
 
@@ -986,12 +1028,30 @@ def fmt_reset(iso_str):
 
 
 def fmt_remain(iso_str, status, full_label):
-    """ok+null reset = window full; stale = uncertain; else = broken upstream."""
-    if status == "ok":
+    """The window's own reset, falling back to naming the window itself.
+
+    Even when blind we keep the ``5h``/``7d`` label: the reader pairs it with
+    ``X`` and the age, so the line still says *which* window is unknown and for
+    how long, instead of the old uninformative ``X: ✕ X``.
+    """
+    if status in ("ok", "stale"):
         return full_label if not iso_str else fmt_reset(iso_str)
-    if status == "stale":
-        return "?"
-    return "X"
+    return full_label
+
+
+def fmt_age(seconds):
+    """Compact age string: how long ago these numbers were true."""
+    try:
+        secs = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return ""
+    if secs >= 86400:
+        return f"{secs // 86400}d"
+    if secs >= 3600:
+        return f"{secs // 3600}h"
+    if secs >= 60:
+        return f"{secs // 60}m"
+    return f"{secs}s"
 
 
 def compute_quota_vars(settings, home):
@@ -1009,6 +1069,7 @@ def compute_quota_vars(settings, home):
     five_hour_reset = ""
     seven_day_pct = 0
     seven_day_reset = ""
+    quota_age = None
 
     if quota_bridge:
         qd = None
@@ -1020,48 +1081,77 @@ def compute_quota_vars(settings, home):
             except Exception:
                 time.sleep(0.03)
         if qd is None:
+            # The file exists but did not parse — a torn read, not an outage.
             quota_status = "stale"
             five_hour_pct = "X"
             seven_day_pct = "X"
         else:
-            quota_status = qd.get("status", "none")
-            if quota_status == "ok":
-                fh = qd.get("five_hour", {})
-                fh_util = fh.get("utilization", 0)
-                five_hour_pct = "X" if fh_util is None or fh_util == "X" else round(fh_util)
-                five_hour_reset = fh.get("resets_at", "")
-                sd = qd.get("seven_day", {})
-                sd_util = sd.get("utilization", 0)
-                seven_day_pct = "X" if sd_util is None or sd_util == "X" else round(sd_util)
-                seven_day_reset = sd.get("resets_at", "")
-            elif quota_status == "error":
-                five_hour_pct = "X"
-                seven_day_pct = "X"
-                fh = qd.get("five_hour", {})
-                five_hour_reset = fh.get("resets_at", "")
-                sd = qd.get("seven_day", {})
-                seven_day_reset = sd.get("resets_at", "")
-            else:
-                five_hour_pct = "X"
-                seven_day_pct = "X"
+            fh = qd.get("five_hour", {})
+            sd = qd.get("seven_day", {})
+            five_hour_reset = fh.get("resets_at", "")
+            seven_day_reset = sd.get("resets_at", "")
+            quota_age = _bridge_age(qd, quota_bridge)
 
-    if quota_bridge and quota_status == "ok" and settings["quota_max_stale"] > 0:
-        try:
-            _cache_age = time.time() - os.stat(quota_bridge).st_mtime
-            if _cache_age > settings["quota_max_stale"]:
-                quota_status = "stale"
+            if _bridge_has_numbers(qd):
+                fh_util = fh.get("utilization", 0)
+                sd_util = sd.get("utilization", 0)
+                five_hour_pct = (
+                    "X" if fh_util is None or fh_util == "X" else round(fh_util)
+                )
+                seven_day_pct = (
+                    "X" if sd_util is None or sd_util == "X" else round(sd_util)
+                )
+                quota_status = _age_status(quota_age, settings)
+                if quota_status == "error":
+                    # Too old to stand behind: report blindness, not a figure.
+                    five_hour_pct = "X"
+                    seven_day_pct = "X"
+                    five_hour_reset = ""
+                    seven_day_reset = ""
+            else:
+                quota_status = "error"
                 five_hour_pct = "X"
                 seven_day_pct = "X"
-        except Exception:
-            pass
+                five_hour_reset = ""
+                seven_day_reset = ""
 
     return {
         "quota_status": quota_status,
+        "quota_age": quota_age,
         "five_hour_pct": five_hour_pct,
         "seven_day_pct": seven_day_pct,
         "five_hour_remain": fmt_remain(five_hour_reset, quota_status, "5h"),
         "seven_day_remain": fmt_remain(seven_day_reset, quota_status, "7d"),
     }
+
+
+def _bridge_age(bridge, cache_path):
+    """Seconds since these numbers were read, preferring the bridge's own stamp."""
+    stamp = bridge.get("timestamp")
+    if isinstance(stamp, (int, float)) and stamp > 0:
+        return max(0, int(time.time() - stamp))
+    age = bridge.get("age_seconds")
+    if isinstance(age, (int, float)):
+        return max(0, int(age))
+    try:
+        return max(0, int(time.time() - os.stat(cache_path).st_mtime))
+    except Exception:
+        return None
+
+
+def _age_status(age, settings):
+    """Map a reading's age onto the fresh / stale / too-old contract."""
+    if age is None:
+        return "ok"
+    fresh_max = settings.get("quota_max_stale", 300)
+    good_max = settings.get("quota_good_max", 86400)
+    # The two ceilings are independent: disabling the staleness marker must not
+    # also disable the point past which a reading is too old to stand behind.
+    if good_max > 0 and age > good_max:
+        return "error"
+    if fresh_max > 0 and age > fresh_max:
+        return "stale"
+    return "ok"
 
 
 # ── Git ────────────────────────────────────────────────────────────────────
@@ -1177,6 +1267,7 @@ def build_claude_status(session, home, claude_dir):
 def attach_claude_quota(status, quota_vars):
     """Attach Claude's existing global quota values as normalized slots."""
     status["quota_status"] = quota_vars["quota_status"]
+    status["quota_age"] = quota_vars.get("quota_age")
     # No credential to expire now that usage comes from the CLI; the shared
     # quota_warn field stays for the Codex path, which sets it from its own data.
     status["quota_warn"] = False
@@ -1216,6 +1307,9 @@ def agent_env_lines(status):
         "AGENT_CONTEXT_PCT=" + _shell_value(status.get("context_pct")),
         "AGENT_QUOTA_STATUS=" + _shell_value(status.get("quota_status") or "none"),
         "AGENT_QUOTA_WARN=" + ("1" if status.get("quota_warn") else "0"),
+        "AGENT_QUOTA_AGE=" + _shell_value(
+            fmt_age(status["quota_age"]) if status.get("quota_age") else ""
+        ),
     ]
     for index, slot in enumerate(slots, start=1):
         prefix = f"AGENT_QUOTA_{index}_"

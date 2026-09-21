@@ -84,6 +84,11 @@ _AUTH_OVERRIDE_VARS = (
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
+# An unbroken 32+ character run of credential-shaped characters. A TUI screen
+# has no legitimate word that long, and the persisted screen must never become
+# somewhere a token comes to rest.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{32,}")
+
 # "16% 16% used" — the bar's aria-label repeats the figure before the word.
 # Anchored to "used" so narrative percentages ("89% of your usage was...")
 # and table cells ("/reconcile-pr  7%") can never match.
@@ -224,6 +229,46 @@ class UsageError(Exception):
     def __init__(self, code, message=None):
         super().__init__(message or code)
         self.code = code
+
+
+def default_failure_screen_path():
+    """Where the screen behind a collection failure is kept for diagnosis."""
+    return os.path.join(
+        os.path.expanduser("~"), ".cache", "tmux-status", "usage-failure.txt"
+    )
+
+
+def redact_screen(text):
+    """Blank credential-shaped runs before a captured screen reaches disk."""
+    return _TOKEN_RE.sub("<redacted>", text)
+
+
+def record_failure_screen(path, code, markers, screen):
+    """Persist the screen a collection failed on. Never raises.
+
+    The 2026-09-08 outage logged the same six false booleans 35 times and threw
+    the screen away, which made it undiagnosable after the fact. One file,
+    overwritten each time: enough to diagnose the incident in front of you
+    without growing without bound.
+    """
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        header = (
+            f"# tmux-status usage capture failure\n"
+            f"# time:    {datetime.now(timezone.utc).isoformat()}\n"
+            f"# code:    {code}\n"
+            f"# markers: {markers}\n"
+            f"# ---- captured screen below ----\n"
+        )
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            f.write(header + redact_screen(screen))
+        os.replace(tmp, path)
+    except Exception:
+        # Diagnostics must never displace the failure they are describing.
+        logger.debug("Could not record failure screen to %s", path, exc_info=True)
 
 
 def error_bridge(error_code):
@@ -471,6 +516,7 @@ class HeadlessClaudeSession:
         self._pane_pid = None
         self.tmux_bin = "tmux"
         self.claude_bin = "claude"
+        self.failure_screen_path = default_failure_screen_path()
 
     def __enter__(self):
         """Start the isolated tmux server and boot the CLI inside it."""
@@ -631,6 +677,23 @@ class HeadlessClaudeSession:
         return all(marker in screen for marker in _USAGE_VIEW_MARKERS)
 
     @classmethod
+    def _is_unknown_screen(cls, screen):
+        """True when the CLI painted something matching no marker we know.
+
+        A blank screen is *not* unknown — it is the CLI not having started.
+        """
+        if not screen.strip():
+            return False
+        known = (
+            (_READY_MARKER,)
+            + _LOGIN_MARKERS
+            + _TRUST_PROMPT_MARKERS
+            + _USAGE_VIEW_MARKERS
+            + (_SESSION_HEADING, _WEEK_HEADING)
+        )
+        return not any(marker in screen for marker in known)
+
+    @classmethod
     def _marker_summary(cls, screen):
         """Return non-sensitive screen-state markers for timeout logs."""
         markers = {
@@ -669,6 +732,17 @@ class HeadlessClaudeSession:
             and not self.shows_usage(screen)
         ):
             actual_error = "usage_no_limit_windows"
+        elif error_code == "cli_boot_timeout" and self._is_unknown_screen(screen):
+            # The CLI painted something we have never seen. That is a different
+            # diagnosis from "the CLI never started", and conflating the two is
+            # what made the 2026-09-08 interstitial look like a dead process.
+            actual_error = "cli_unknown_screen"
+        record_failure_screen(
+            self.failure_screen_path,
+            actual_error,
+            self._marker_summary(screen),
+            screen,
+        )
         if warn_on_timeout:
             logger.warning(
                 "Timed out (%s); screen markers: %s",

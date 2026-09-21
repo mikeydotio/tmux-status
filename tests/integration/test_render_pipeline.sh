@@ -113,6 +113,47 @@ partial_out="$(bash "$AGENT_READER" "$PANE")"
 case "$partial_out" in *"GPT-5.4"*) pass "partial record keeps model" ;; *) die "partial record: $partial_out" ;; esac
 case "$partial_out" in *"Ctx:"*|*"│"*) die "partial record rendered missing segments: $partial_out" ;; *) pass "partial metrics omitted" ;; esac
 
+# ── Quota degradation rendering (TS-56) ────────────────────────
+# A quota outage must say how long it has lasted. A bare X that has stood for
+# four days is indistinguishable from one five minutes old, which is how a
+# 3-hour and then a 4-day outage both went unnoticed.
+write_quota_cache() {
+    cat > "$ENVF" <<EOF
+AGENT_PROVIDER=claude
+AGENT_MODEL=claude-opus-5
+AGENT_SHORT_MODEL='Opus 5'
+AGENT_EFFORT=high
+AGENT_HAS_THINKING=1
+AGENT_CONTEXT_PCT=37
+AGENT_QUOTA_STATUS=$1
+AGENT_QUOTA_WARN=0
+AGENT_QUOTA_AGE=$2
+AGENT_QUOTA_1_DURATION=5h
+AGENT_QUOTA_1_RESET=$3
+AGENT_QUOTA_1_PCT=$4
+AGENT_QUOTA_2_DURATION=7d
+AGENT_QUOTA_2_RESET=$5
+AGENT_QUOTA_2_PCT=$6
+GIT_LINE='~/work : main (clean)'
+RENDER_TS=9999999999
+EOF
+}
+
+write_quota_cache error 4d 5h X 7d X
+blind_out="$(bash "$AGENT_READER" "$PANE")"
+case "$blind_out" in *"X 4d"*) pass "blind quota states its age" ;; *) die "no age on blind quota: $blind_out" ;; esac
+case "$blind_out" in *"5h:"*"7d:"*) pass "blind quota still names both windows" ;; *) die "windows lost: $blind_out" ;; esac
+
+write_quota_cache stale 20m 3.8h 61 1.6d 61
+stale_out="$(bash "$AGENT_READER" "$PANE")"
+case "$stale_out" in *"61%"*) pass "stale quota keeps the real numbers" ;; *) die "stale dropped numbers: $stale_out" ;; esac
+case "$stale_out" in *"61%"*"⋯"*) pass "stale quota marked with the staleness glyph" ;; *) die "no stale glyph: $stale_out" ;; esac
+case "$stale_out" in *"X"*) die "stale must not render X while numbers are known: $stale_out" ;; *) pass "stale renders no X" ;; esac
+
+write_quota_cache ok "" 3.8h 61 1.6d 61
+fresh_out="$(bash "$AGENT_READER" "$PANE")"
+case "$fresh_out" in *"⋯"*) die "fresh quota must carry no staleness glyph: $fresh_out" ;; *) pass "fresh quota unmarked" ;; esac
+
 # ── Test 2: cache miss renders nothing, exits 0 ────────────────
 echo "TEST 2: cache miss -> silent, exit 0..."
 miss_out="$(bash "$AGENT_READER" 999999)"; miss_rc=$?
