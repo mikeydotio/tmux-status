@@ -511,6 +511,30 @@ class TestHeadlessSessionLifecycle(unittest.TestCase):
         self.assertNotIn("CLAUDE_CONFIG_DIR", _AUTH_OVERRIDE_VARS)
         self.assertNotIn("ANTHROPIC_BASE_URL", _AUTH_OVERRIDE_VARS)
 
+    def test_capture_piggybacks_the_cli_first_party_token(self):
+        """The collector must not delete the login it exists to observe.
+
+        CLAUDE_CODE_OAUTH_TOKEN is Claude Code's own token, not an
+        alternate-provider selector. Scrubbing it left the pane with no
+        credential at all on a machine where it is what real sessions use —
+        cli_not_authenticated on every poll while the user's CLI was logged
+        in (TS-57).
+        """
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", _AUTH_OVERRIDE_VARS)
+
+    def test_capture_still_scrubs_alternate_provider_selectors(self):
+        """Preserving first-party auth must not readmit provider redirection."""
+        for name in (
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+            "CLAUDE_CODE_USE_MANTLE",
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ):
+            self.assertIn(name, _AUTH_OVERRIDE_VARS)
+
 
 class TestBinaryResolutionUnderMinimalPath(unittest.TestCase):
     """Regression: the daemon runs under launchd/systemd with a minimal PATH.
