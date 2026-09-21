@@ -184,17 +184,14 @@ class TestWSGIQuotaResponseContract(unittest.TestCase):
         """Error status from the collector passes through WSGI unchanged."""
         server, app = _make_wsgi_server()
         server._api_key = None
-        server._cached_data = {
-            "status": "session_key_expired",
-            "error": "session_key_expired",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 1743696000,
-        }
+        server._last_error = "session_key_expired"
 
-        resp = app.get("/quota")
+        # 503: the server is up but has no reading to serve, which is exactly
+        # what "no good data" should look like to a client.
+        resp = app.get("/quota", status=503)
         data = resp.json
-        self.assertEqual(data["status"], "session_key_expired")
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(data["error"], "session_key_expired")
         self.assertEqual(data["five_hour"]["utilization"], "X")
 
 

@@ -425,19 +425,15 @@ class TestQuotaEndpoint(unittest.TestCase):
         self.assertEqual(result["seven_day"]["utilization"], 15)
         self.assertEqual(result["org_uuid"], "org-123")
 
-    def test_passes_through_error_data(self):
-        """GET /quota passes through error status from cached data."""
-        server, routes, hooks, errors, mb = _make_server()
-        server._cached_data = {
-            "status": "expired",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 1743696000,
-            "error": "session_key_expired",
-        }
+    def test_reports_error_when_nothing_was_ever_collected(self):
+        """GET /quota names the failure when there is no good reading to serve."""
+        server, routes, hooks, errors, mb = _make_server(
+            collector=_StubCollector(error_bridge("session_key_expired"))
+        )
+        server._do_collect()
         result_json = routes["/quota"]()
         result = json.loads(result_json)
-        self.assertEqual(result["status"], "expired")
+        self.assertEqual(result["status"], "error")
         self.assertEqual(result["error"], "session_key_expired")
 
     def test_503_response_keys(self):
@@ -627,13 +623,13 @@ class TestBackgroundPollThread(unittest.TestCase):
         self.assertEqual(server.collector.calls, 3)
 
     def test_handles_collector_error_bridge(self):
-        """A collector error bridge is cached and marks the cycle failed."""
+        """A collector error bridge is recorded without becoming cached data."""
         server, _, _, _, _ = _make_server(
             collector=_StubCollector(error_bridge("cli_not_found"))
         )
         server._do_collect()
-        self.assertEqual(server._cached_data["status"], "error")
-        self.assertEqual(server._cached_data["error"], "cli_not_found")
+        self.assertIsNone(server._cached_data)
+        self.assertEqual(server._last_error, "cli_not_found")
         self.assertFalse(server._last_collect_ok)
 
     def test_handles_collector_exception(self):
@@ -642,8 +638,8 @@ class TestBackgroundPollThread(unittest.TestCase):
             collector=_StubCollector(exc=Exception("unexpected"))
         )
         server._do_collect()
-        self.assertEqual(server._cached_data["status"], "error")
-        self.assertEqual(server._cached_data["error"], "collector_crashed")
+        self.assertIsNone(server._cached_data)
+        self.assertEqual(server._last_error, "collector_crashed")
         self.assertFalse(server._last_collect_ok)
 
     def test_sets_last_collect_ok_false_on_error_status(self):
@@ -1136,16 +1132,12 @@ class TestQuotaBridgeFormatContract(unittest.TestCase):
 
     def test_error_response_has_all_bridge_keys(self):
         """Error /quota responses include status, five_hour, seven_day, timestamp, error."""
-        server, routes, _, _, _ = _make_server()
-        server._cached_data = {
-            "status": "session_key_expired",
-            "error": "session_key_expired",
-            "five_hour": {"utilization": "X", "resets_at": None},
-            "seven_day": {"utilization": "X", "resets_at": None},
-            "timestamp": 1743696000,
-        }
+        server, routes, _, _, _ = _make_server(
+            collector=_StubCollector(error_bridge("session_key_expired"))
+        )
+        server._do_collect()
         result = json.loads(routes["/quota"]())
-        self.assertEqual(result["status"], "session_key_expired")
+        self.assertEqual(result["status"], "error")
         self.assertEqual(result["error"], "session_key_expired")
         self.assertEqual(result["five_hour"]["utilization"], "X")
         self.assertIsNone(result["five_hour"]["resets_at"])
